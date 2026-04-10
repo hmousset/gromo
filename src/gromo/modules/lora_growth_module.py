@@ -1,0 +1,388 @@
+"""
+Growing LoRA module classes for gromo.
+
+Defines :class:`GrowingLoRALinear` and :class:`GrowingLoRAConv2d`, which wrap
+a frozen original layer and add a trainable low-rank adaptation::
+
+    output = original(x) + scaling * B(A(x))
+
+where A and B are growing modules from gromo.  The rank starts at 0 and grows
+via the FOGRO pipeline (see :mod:`gromo.containers.lora_growth_container`).
+"""
+
+from __future__ import annotations
+
+import warnings
+
+import torch
+import torch.nn as nn
+
+from gromo.containers.growing_block import Conv2dGrowingBlock, LinearGrowingBlock
+from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
+from gromo.modules.linear_growing_module import LinearGrowingModule
+
+
+# Types accepted as the "original layer" for linear LoRA
+_LinearLayerType = (nn.Linear, LinearGrowingModule)
+# Types accepted as the "original layer" for conv LoRA
+_Conv2dLayerType = (nn.Conv2d, Conv2dGrowingModule)
+
+
+class GrowingLoRALinear(LinearGrowingBlock):
+    """LoRA block for nn.Linear (or LinearGrowingModule) using gromo.
+
+    The LoRA decomposition is ``W_original + scaling * B @ A`` where A and B
+    are the two internal layers of this ``LinearGrowingBlock``. The frozen
+    original layer is used as the residual/downsample path.
+
+    Parameters
+    ----------
+    linear : nn.Linear | LinearGrowingModule
+        Original linear layer (will be frozen).
+    rank : int
+        Initial LoRA rank. Default 0 (no adaptation).
+    alpha : float
+        Scaling factor. Effective scaling is ``alpha / rank``.
+    target_rank : int | None
+        Target rank for the growing block.
+    activation : torch.nn.Module | None
+        Activation between A and B. Default ``nn.Identity()`` to match LoRA.
+    device : torch.device | None
+        Device for parameters.
+    name : str
+        Name for the growing block.
+    """
+
+    def __init__(
+        self,
+        linear: nn.Linear | LinearGrowingModule,
+        rank: int = 0,
+        alpha: float = 1.0,
+        target_rank: int | None = None,
+        activation: torch.nn.Module | None = None,
+        device: torch.device | None = None,
+        name: str = "lora_block",
+    ):
+        linear.requires_grad_(False)
+        self.alpha = alpha
+
+        if activation is None:
+            activation = nn.Identity()
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Initializing zero-element tensors is a no-op",
+                category=UserWarning,
+            )
+            super().__init__(
+                in_features=linear.in_features,
+                out_features=linear.out_features,
+                hidden_features=rank,
+                target_hidden_features=target_rank,
+                activation=activation,
+                name=name,
+                kwargs_layer={"use_bias": False},
+                downsample=linear,
+                device=device,
+            )
+        self.linear = linear
+
+    @property
+    def rank(self) -> int:
+        """Current LoRA rank (hidden dimension)."""
+        return self.hidden_neurons
+
+    @property
+    def scaling(self) -> float:
+        """Effective scaling factor ``alpha / rank``."""
+        if self.rank == 0:
+            return 0.0
+        return self.alpha / self.rank
+
+    @property
+    def weight(self) -> torch.Tensor:
+        """Original weight (read-only)."""
+        return self.linear.weight
+
+    @property
+    def bias(self) -> torch.Tensor | None:
+        """Original bias (read-only)."""
+        return self.linear.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward: ``original(x) + scaling * B(A(x))``.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input of shape ``(..., in_features)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Output of shape ``(..., out_features)``.
+        """
+        base_out = self.linear(x)
+        block_out = super().forward(x)
+        lora_out = block_out - base_out
+        if self.rank == 0 and not self.first_layer.store_input:
+            return base_out
+        return base_out + self.scaling * lora_out
+
+    def extended_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Extended forward including computed optimal growth directions.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+
+        Returns
+        -------
+        torch.Tensor
+        """
+        base_out = self.linear(x)
+        block_out = super().extended_forward(x)
+        if self.rank == 0 and self.first_layer.extended_output_layer is None:
+            return base_out
+        return base_out + self.scaling * (block_out - base_out)
+
+    def merge_lora(self) -> nn.Linear:
+        """Merge LoRA into the original layer.
+
+        Returns
+        -------
+        nn.Linear
+            New linear layer with merged weights.
+        """
+        merged = nn.Linear(
+            self.in_features,
+            self.out_features,
+            bias=self.linear.bias is not None,
+            device=self.linear.weight.device,
+            dtype=self.linear.weight.dtype,
+        )
+        with torch.no_grad():
+            if self.rank > 0:
+                delta = self.second_layer.weight @ self.first_layer.weight
+                merged.weight.copy_(self.linear.weight + self.scaling * delta)
+            else:
+                merged.weight.copy_(self.linear.weight)
+            if self.linear.bias is not None:
+                merged.bias.copy_(self.linear.bias)
+        return merged
+
+    def lora_parameters(self) -> list[nn.Parameter]:
+        """Return only the trainable LoRA parameters (A and B layers)."""
+        return list(self.first_layer.parameters()) + list(self.second_layer.parameters())
+
+    def reset_lora(self) -> None:
+        """Reset LoRA to zero output."""
+        nn.init.kaiming_uniform_(self.first_layer.weight)
+        nn.init.zeros_(self.second_layer.weight)
+
+    def extra_repr(self) -> str:
+        """Return extra representation string."""
+        return (
+            f"in_features={self.in_features}, out_features={self.out_features}, "
+            f"rank={self.rank}, alpha={self.alpha}"
+        )
+
+
+class GrowingLoRAConv2d(Conv2dGrowingBlock):
+    """LoRA wrapper for nn.Conv2d (or Conv2dGrowingModule) using gromo.
+
+    The LoRA decomposition is ``Conv_original(x) + scaling * B(A(x))``
+    where A and B are ``Conv2dGrowingModule`` instances composed via a
+    ``Conv2dGrowingBlock``. The hidden channels equal the LoRA rank and
+    start at 0 by default.
+
+    Parameters
+    ----------
+    conv : nn.Conv2d | Conv2dGrowingModule
+        Original convolution layer (will be frozen).
+    rank : int
+        Initial LoRA rank (hidden channels). Default 0.
+    alpha : float
+        Scaling factor. Effective scaling is ``alpha / rank``.
+    target_rank : int | None
+        Target rank for the growing block.
+    activation : torch.nn.Module | None
+        Activation between A and B. Default ``nn.Identity()``.
+    device : torch.device | None
+        Device for parameters.
+    name : str
+        Name for the growing block.
+    """
+
+    def __init__(
+        self,
+        conv: nn.Conv2d | Conv2dGrowingModule,
+        rank: int = 0,
+        alpha: float = 1.0,
+        target_rank: int | None = None,
+        activation: torch.nn.Module | None = None,
+        device: torch.device | None = None,
+        name: str = "lora_conv_block",
+    ):
+        if isinstance(conv, Conv2dGrowingModule):
+            underlying = conv.layer
+        else:
+            underlying = conv
+        self.in_channels = underlying.in_channels
+        self.out_channels = underlying.out_channels
+        self.alpha = alpha
+
+        conv.requires_grad_(False)
+
+        if activation is None:
+            activation = nn.Identity()
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Initializing zero-element tensors is a no-op",
+                category=UserWarning,
+            )
+            super().__init__(
+                in_channels=self.in_channels,
+                out_channels=self.out_channels,
+                hidden_channels=rank,
+                target_hidden_channels=target_rank,
+                activation=activation,
+                name=name,
+                kwargs_first_layer={
+                    "use_bias": False,
+                    "kernel_size": underlying.kernel_size,
+                    "stride": underlying.stride,
+                    "padding": underlying.padding,
+                    "dilation": underlying.dilation,
+                },
+                kwargs_second_layer={
+                    "use_bias": False,
+                    "kernel_size": 1,
+                    "stride": 1,
+                    "padding": 0,
+                },
+                downsample=conv,
+                device=device,
+            )
+        self.conv = conv
+
+    @property
+    def rank(self) -> int:
+        """Current LoRA rank (hidden channels)."""
+        return self.hidden_neurons
+
+    @property
+    def scaling(self) -> float:
+        """Effective scaling factor ``alpha / rank``."""
+        if self.rank == 0:
+            return 0.0
+        return self.alpha / self.rank
+
+    @property
+    def weight(self) -> torch.Tensor:
+        """Original weight (read-only)."""
+        return self.conv.weight
+
+    @property
+    def bias(self) -> torch.Tensor | None:
+        """Original bias (read-only)."""
+        return self.conv.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward: ``conv(x) + scaling * B(A(x))``.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input of shape ``(N, C_in, H, W)``.
+
+        Returns
+        -------
+        torch.Tensor
+            Output of shape ``(N, C_out, H_out, W_out)``.
+        """
+        base_out = self.conv(x)
+        block_out = super().forward(x)
+        lora_out = block_out - base_out
+        if self.rank == 0 and not self.first_layer.store_input:
+            return base_out
+        return base_out + self.scaling * lora_out
+
+    def extended_forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Extended forward including computed optimal growth directions.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+
+        Returns
+        -------
+        torch.Tensor
+        """
+        base_out = self.conv(x)
+        block_out = super().extended_forward(x)
+        if self.rank == 0 and self.first_layer.extended_output_layer is None:
+            return base_out
+        return base_out + self.scaling * (block_out - base_out)
+
+    def merge_lora(self) -> nn.Conv2d:
+        """Merge LoRA into the original convolution layer.
+
+        Note: merging is only exact when both A and B use the same
+        kernel_size, stride, padding, and dilation as the original.
+
+        Returns
+        -------
+        nn.Conv2d
+            New conv layer with merged weights.
+        """
+        if isinstance(self.conv, Conv2dGrowingModule):
+            orig = self.conv.layer
+        else:
+            orig = self.conv
+        merged = nn.Conv2d(
+            self.in_channels,
+            self.out_channels,
+            kernel_size=orig.kernel_size,
+            stride=orig.stride,
+            padding=orig.padding,
+            dilation=orig.dilation,
+            groups=orig.groups,
+            bias=orig.bias is not None,
+            device=orig.weight.device,
+            dtype=orig.weight.dtype,
+        )
+        with torch.no_grad():
+            if self.rank > 0:
+                a_w = self.first_layer.weight  # (rank, in_ch, kH, kW)
+                b_w = self.second_layer.weight  # (out_ch, rank, 1, 1)
+                b_mat = b_w.squeeze(-1).squeeze(-1)  # (out_ch, rank)
+                a_flat = a_w.view(a_w.shape[0], -1)  # (rank, in_ch*kH*kW)
+                delta_flat = b_mat @ a_flat  # (out_ch, in_ch*kH*kW)
+                delta = delta_flat.view_as(orig.weight)
+                merged.weight.copy_(orig.weight + self.scaling * delta)
+            else:
+                merged.weight.copy_(orig.weight)
+            if orig.bias is not None:
+                merged.bias.copy_(orig.bias)
+        return merged
+
+    def lora_parameters(self) -> list[nn.Parameter]:
+        """Return only the trainable LoRA parameters (A and B layers)."""
+        return list(self.first_layer.parameters()) + list(self.second_layer.parameters())
+
+    def extra_repr(self) -> str:
+        """Return extra representation string."""
+        return (
+            f"in_channels={self.in_channels}, out_channels={self.out_channels}, "
+            f"rank={self.rank}, alpha={self.alpha}"
+        )
+
+
+# Union type for any LoRA wrapper
+_LoRATypes = (GrowingLoRALinear, GrowingLoRAConv2d)
