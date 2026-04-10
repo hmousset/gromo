@@ -529,3 +529,115 @@ class TestAsLoraModelConv2d(TestCase):
         model = NamedConvModel()
         lora_model = get_growing_lora_model(model, target_modules=["conv1"])
         self.assertEqual(len(lora_model.lora_modules()), 1)
+
+
+# ===================== Dropout / Extra Coverage Tests =====================
+
+
+class TestLoRADropoutContainer(TestCase):
+    """Tests covering lora_dropout propagation through the container."""
+
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_dropout_propagated_to_modules(self):
+        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        lora_model = get_growing_lora_model(model, lora_dropout=0.4)
+        for m in lora_model.lora_modules():
+            self.assertAlmostEqual(m.lora_dropout.p, 0.4)
+
+    def test_extra_repr_shows_dropout(self):
+        model = nn.Sequential(nn.Linear(10, 5))
+        lora_model = get_growing_lora_model(model, lora_dropout=0.3)
+        self.assertIn("lora_dropout=0.3", lora_model.extra_repr())
+
+    def test_extra_repr_no_dropout_by_default(self):
+        model = nn.Sequential(nn.Linear(10, 5))
+        lora_model = get_growing_lora_model(model)
+        self.assertNotIn("lora_dropout", lora_model.extra_repr())
+
+    def test_explicit_in_features_only(self):
+        """Pass in_features but let out_features be inferred."""
+        model = nn.Sequential(nn.Linear(10, 5))
+        lora_model = get_growing_lora_model(model, in_features=10)
+        self.assertEqual(lora_model.in_features, 10)
+        self.assertEqual(lora_model.out_features, 5)
+
+    def test_explicit_out_features_only(self):
+        """Pass out_features but let in_features be inferred."""
+        model = nn.Sequential(nn.Linear(10, 5))
+        lora_model = get_growing_lora_model(model, out_features=5)
+        self.assertEqual(lora_model.in_features, 10)
+        self.assertEqual(lora_model.out_features, 5)
+
+
+class TestLoadLoRAStateDictCoverage(TestCase):
+    """Edge-case coverage for load_lora_state_dict."""
+
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_load_same_rank_no_expansion(self):
+        """Loading a state with same rank should copy weights without expanding."""
+        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        lora_model = get_growing_lora_model(model)
+        # Grow to rank 2
+        data = [(torch.randn(4, 10), torch.randn(4, 5)) for _ in range(2)]
+        _grow(lora_model, data, added_rank=2)
+        state = lora_model.lora_state_dict()
+
+        # Reload into fresh model already at rank 2 — no expansion should happen
+        model2 = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        lora_model2 = get_growing_lora_model(model2)
+        _grow(lora_model2, data, added_rank=2)
+        lora_model2.load_lora_state_dict(state)
+
+        for m1, m2 in zip(
+            lora_model.lora_modules(), lora_model2.lora_modules(), strict=True
+        ):
+            self.assertTrue(torch.allclose(m1.first_layer.weight, m2.first_layer.weight))
+
+    def test_load_missing_key_is_skipped(self):
+        """load_lora_state_dict silently skips modules whose key is absent."""
+        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        lora_model = get_growing_lora_model(model)
+        # Empty state — nothing should be loaded, no error
+        lora_model.load_lora_state_dict({})
+        for m in lora_model.lora_modules():
+            self.assertEqual(m.rank, 0)
+
+    def test_merge_all_lora_top_level_module(self):
+        """merge_all_lora works when a LoRA wrapper is at the top level (no dot in name)."""
+        linear = nn.Linear(4, 8)
+
+        class TopLevel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lora = GrowingLoRALinear(linear, rank=0)
+
+            def forward(self, x):
+                return self.lora(x)
+
+        model = TopLevel()
+        from gromo.containers.lora_growth_container import merge_all_lora
+
+        merge_all_lora(model)
+        self.assertIsInstance(model.lora, nn.Linear)
+
+    def test_merge_all_lora_nested_module(self):
+        """merge_all_lora works when a LoRA wrapper is nested (dotted path, lines 432-433)."""
+
+        class NestedModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = nn.Sequential(nn.Linear(4, 8))
+
+            def forward(self, x):
+                return self.block(x)
+
+        model = NestedModel()
+        lora_model = get_growing_lora_model(model)
+        x = torch.randn(2, 4)
+        _ = lora_model(x)
+        lora_model.merge_lora()
+        self.assertEqual(lora_model(x).shape, (2, 8))

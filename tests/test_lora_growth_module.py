@@ -5,6 +5,8 @@ Tests cover:
 - GrowingLoRALinear: init, forward, merge, utilities, FOGRO pipeline
 - GrowingLoRAConv2d: init, forward, merge, FOGRO pipeline
 - LinearGrowingModule interoperability
+- lora_dropout: forward behaviour and extra_repr
+- extended_forward with rank > 0
 """
 
 from unittest import TestCase
@@ -17,6 +19,7 @@ from gromo.containers.lora_growth_container import (
     get_growing_lora_model,
     get_lora_modules,
 )
+from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.modules.lora_growth_module import GrowingLoRAConv2d, GrowingLoRALinear
 
@@ -621,3 +624,157 @@ class TestGrowingLoRAConv2dFOGRO(TestCase):
         x2 = torch.randn(2, 3, 8, 8)
         out = lora(x2)
         self.assertEqual(out.shape, (2, 8, 8, 8))
+
+
+# ===================== Dropout Tests =====================
+
+
+class TestLoRADropoutLinear(TestCase):
+    """Tests for lora_dropout in GrowingLoRALinear."""
+
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_dropout_stored(self):
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4, lora_dropout=0.3)
+        self.assertAlmostEqual(lora.lora_dropout.p, 0.3)
+
+    def test_forward_train_mode_is_stochastic(self):
+        """In train mode with dropout, two forwards should differ."""
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4, lora_dropout=0.9)
+        lora.train()
+        x = torch.ones(16, 10)
+        out1 = lora(x)
+        out2 = lora(x)
+        self.assertFalse(torch.allclose(out1, out2))
+
+    def test_forward_eval_mode_is_deterministic(self):
+        """In eval mode, dropout is disabled — two forwards must be identical."""
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4, lora_dropout=0.9)
+        lora.eval()
+        x = torch.ones(16, 10)
+        self.assertTrue(torch.allclose(lora(x), lora(x)))
+
+    def test_extra_repr_shows_dropout(self):
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=2, lora_dropout=0.25)
+        self.assertIn("lora_dropout=0.25", lora.extra_repr())
+
+    def test_extra_repr_no_dropout_by_default(self):
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=2)
+        self.assertNotIn("lora_dropout", lora.extra_repr())
+
+    def test_extended_forward_with_nonzero_rank(self):
+        """extended_forward with rank > 0 returns base + scaling * lora."""
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4)
+        x = torch.randn(3, 10)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (3, 20))
+
+    def test_forward_rank0_store_input(self):
+        """rank=0 with store_input=True (after init_computation) uses lora path."""
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=0, lora_dropout=0.5)
+        lora.init_computation()
+        x = torch.randn(4, 10)
+        out = lora(x)
+        self.assertEqual(out.shape, (4, 20))
+        lora.reset_computation()
+
+    def test_explicit_activation_skips_default(self):
+        """Passing activation explicitly skips the `if activation is None` branch."""
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=2, activation=nn.ReLU())
+        x = torch.randn(3, 10)
+        self.assertEqual(lora(x).shape, (3, 20))
+
+    def test_extended_forward_rank_zero(self):
+        """extended_forward with rank=0 and no growth returns early (line 155)."""
+        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=0)
+        x = torch.randn(3, 10)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (3, 20))
+
+
+class TestLoRADropoutConv2d(TestCase):
+    """Tests for lora_dropout in GrowingLoRAConv2d."""
+
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_dropout_stored(self):
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.3)
+        self.assertAlmostEqual(lora.lora_dropout.p, 0.3)
+
+    def test_forward_train_mode_is_stochastic(self):
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.9)
+        lora.train()
+        x = torch.ones(4, 3, 8, 8)
+        self.assertFalse(torch.allclose(lora(x), lora(x)))
+
+    def test_forward_eval_mode_is_deterministic(self):
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.9)
+        lora.eval()
+        x = torch.ones(4, 3, 8, 8)
+        self.assertTrue(torch.allclose(lora(x), lora(x)))
+
+    def test_extra_repr_shows_dropout(self):
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3), rank=2, lora_dropout=0.5)
+        self.assertIn("lora_dropout=0.5", lora.extra_repr())
+
+    def test_extra_repr_no_dropout_by_default(self):
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3), rank=2)
+        self.assertNotIn("lora_dropout", lora.extra_repr())
+
+    def test_extended_forward_with_nonzero_rank(self):
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4)
+        x = torch.randn(2, 3, 8, 8)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (2, 8, 8, 8))
+
+    def test_forward_rank0_store_input(self):
+        """rank=0 with store_input=True (after init_computation) uses lora path."""
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=0, lora_dropout=0.5)
+        lora.init_computation()
+        x = torch.randn(2, 3, 8, 8)
+        out = lora(x)
+        self.assertEqual(out.shape, (2, 8, 8, 8))
+        lora.reset_computation()
+
+    def test_explicit_activation_skips_default(self):
+        """Passing activation explicitly skips the `if activation is None` branch."""
+        lora = GrowingLoRAConv2d(
+            nn.Conv2d(3, 8, 3, padding=1), rank=2, activation=nn.ReLU()
+        )
+        x = torch.randn(2, 3, 8, 8)
+        self.assertEqual(lora(x).shape, (2, 8, 8, 8))
+
+    def test_extended_forward_rank_zero(self):
+        """extended_forward with rank=0 and no growth returns early (line 348)."""
+        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=0)
+        x = torch.randn(2, 3, 8, 8)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (2, 8, 8, 8))
+
+    def test_wrap_conv2d_growing_module(self):
+        """GrowingLoRAConv2d accepts a Conv2dGrowingModule (line 245)."""
+        cgm = Conv2dGrowingModule(
+            in_channels=3, out_channels=8, kernel_size=3, padding=1, name="test_conv"
+        )
+        lora = GrowingLoRAConv2d(cgm, rank=2)
+        self.assertEqual(lora.in_channels, 3)
+        self.assertEqual(lora.out_channels, 8)
+
+    def test_merge_lora_conv2d_growing_module(self):
+        """merge_lora on a Conv2dGrowingModule-backed LoRA (line 363)."""
+        cgm = Conv2dGrowingModule(
+            in_channels=3, out_channels=8, kernel_size=3, padding=1, name="test_merge"
+        )
+        lora = GrowingLoRAConv2d(cgm, rank=2, alpha=1.0)
+        merged = lora.merge_lora()
+        self.assertIsInstance(merged, nn.Conv2d)
+        self.assertEqual(merged.weight.shape[0], 8)
+
+    def test_merge_lora_no_bias(self):
+        """merge_lora on conv without bias (line 389->391 False branch)."""
+        conv = nn.Conv2d(3, 8, 3, padding=1, bias=False)
+        lora = GrowingLoRAConv2d(conv, rank=2, alpha=1.0)
+        merged = lora.merge_lora()
+        self.assertIsNone(merged.bias)

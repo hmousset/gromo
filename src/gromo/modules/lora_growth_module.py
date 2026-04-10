@@ -43,6 +43,9 @@ class GrowingLoRALinear(LinearGrowingBlock):
         Initial LoRA rank. Default 0 (no adaptation).
     alpha : float
         Scaling factor. Effective scaling is ``alpha / rank``.
+    lora_dropout : float
+        Dropout probability applied to the input before the LoRA path.
+        Disabled (``p=0.0``) by default.
     target_rank : int | None
         Target rank for the growing block.
     activation : torch.nn.Module | None
@@ -58,6 +61,7 @@ class GrowingLoRALinear(LinearGrowingBlock):
         linear: nn.Linear | LinearGrowingModule,
         rank: int = 0,
         alpha: float = 1.0,
+        lora_dropout: float = 0.0,
         target_rank: int | None = None,
         activation: torch.nn.Module | None = None,
         device: torch.device | None = None,
@@ -87,6 +91,7 @@ class GrowingLoRALinear(LinearGrowingBlock):
                 device=device,
             )
         self.linear = linear
+        self.lora_dropout = nn.Dropout(p=lora_dropout)
 
     @property
     def rank(self) -> int:
@@ -124,10 +129,11 @@ class GrowingLoRALinear(LinearGrowingBlock):
             Output of shape ``(..., out_features)``.
         """
         base_out = self.linear(x)
-        block_out = super().forward(x)
-        lora_out = block_out - base_out
         if self.rank == 0 and not self.first_layer.store_input:
             return base_out
+        x_lora = self.lora_dropout(x)
+        block_out = super().forward(x_lora)
+        lora_out = block_out - self.linear(x_lora)
         return base_out + self.scaling * lora_out
 
     def extended_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -143,10 +149,11 @@ class GrowingLoRALinear(LinearGrowingBlock):
         torch.Tensor
         """
         base_out = self.linear(x)
-        block_out = super().extended_forward(x)
+        x_lora = self.lora_dropout(x)
+        block_out = super().extended_forward(x_lora)
         if self.rank == 0 and self.first_layer.extended_output_layer is None:
             return base_out
-        return base_out + self.scaling * (block_out - base_out)
+        return base_out + self.scaling * (block_out - self.linear(x_lora))
 
     def merge_lora(self) -> nn.Linear:
         """Merge LoRA into the original layer.
@@ -184,10 +191,14 @@ class GrowingLoRALinear(LinearGrowingBlock):
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
-        return (
+        dropout_p = self.lora_dropout.p
+        s = (
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"rank={self.rank}, alpha={self.alpha}"
         )
+        if dropout_p > 0.0:
+            s += f", lora_dropout={dropout_p}"
+        return s
 
 
 class GrowingLoRAConv2d(Conv2dGrowingBlock):
@@ -206,6 +217,9 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         Initial LoRA rank (hidden channels). Default 0.
     alpha : float
         Scaling factor. Effective scaling is ``alpha / rank``.
+    lora_dropout : float
+        Dropout probability applied to the input before the LoRA path.
+        Disabled (``p=0.0``) by default.
     target_rank : int | None
         Target rank for the growing block.
     activation : torch.nn.Module | None
@@ -221,6 +235,7 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         conv: nn.Conv2d | Conv2dGrowingModule,
         rank: int = 0,
         alpha: float = 1.0,
+        lora_dropout: float = 0.0,
         target_rank: int | None = None,
         activation: torch.nn.Module | None = None,
         device: torch.device | None = None,
@@ -269,6 +284,7 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
                 device=device,
             )
         self.conv = conv
+        self.lora_dropout = nn.Dropout(p=lora_dropout)
 
     @property
     def rank(self) -> int:
@@ -306,10 +322,11 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
             Output of shape ``(N, C_out, H_out, W_out)``.
         """
         base_out = self.conv(x)
-        block_out = super().forward(x)
-        lora_out = block_out - base_out
         if self.rank == 0 and not self.first_layer.store_input:
             return base_out
+        x_lora = self.lora_dropout(x)
+        block_out = super().forward(x_lora)
+        lora_out = block_out - self.conv(x_lora)
         return base_out + self.scaling * lora_out
 
     def extended_forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -325,10 +342,11 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         torch.Tensor
         """
         base_out = self.conv(x)
-        block_out = super().extended_forward(x)
+        x_lora = self.lora_dropout(x)
+        block_out = super().extended_forward(x_lora)
         if self.rank == 0 and self.first_layer.extended_output_layer is None:
             return base_out
-        return base_out + self.scaling * (block_out - base_out)
+        return base_out + self.scaling * (block_out - self.conv(x_lora))
 
     def merge_lora(self) -> nn.Conv2d:
         """Merge LoRA into the original convolution layer.
@@ -378,10 +396,14 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
-        return (
+        dropout_p = self.lora_dropout.p
+        s = (
             f"in_channels={self.in_channels}, out_channels={self.out_channels}, "
             f"rank={self.rank}, alpha={self.alpha}"
         )
+        if dropout_p > 0.0:
+            s += f", lora_dropout={dropout_p}"
+        return s
 
 
 # Union type for any LoRA wrapper

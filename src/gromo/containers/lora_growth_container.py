@@ -96,6 +96,7 @@ def _matches_target(
 def _inject_lora_inplace(
     model: nn.Module,
     alpha: float,
+    lora_dropout: float,
     target_modules: list[str] | None,
 ) -> None:
     """Replace targeted layers with LoRA wrappers in-place (rank 0).
@@ -106,6 +107,8 @@ def _inject_lora_inplace(
         Model to modify.
     alpha : float
         LoRA scaling factor.
+    lora_dropout : float
+        Dropout probability for the LoRA path.
     target_modules : list of str or None
         Name filter; ``None`` wraps all linear / conv layers.
     """
@@ -131,11 +134,19 @@ def _inject_lora_inplace(
 
         if isinstance(module, _LinearLayerType):
             replacement: nn.Module = GrowingLoRALinear(
-                module, rank=0, alpha=alpha, name=f"lora_{full_name}"
+                module,
+                rank=0,
+                alpha=alpha,
+                lora_dropout=lora_dropout,
+                name=f"lora_{full_name}",
             )
         else:
             replacement = GrowingLoRAConv2d(
-                module, rank=0, alpha=alpha, name=f"lora_{full_name}"
+                module,
+                rank=0,
+                alpha=alpha,
+                lora_dropout=lora_dropout,
+                name=f"lora_{full_name}",
             )
         replacements.append((parent, attr_name, replacement))
         wrapped_names.add(full_name)
@@ -172,6 +183,9 @@ class LoRAGrowingModel(SequentialGrowingModel):
         Fully trained model to adapt. Modified in-place.
     alpha : float
         LoRA scaling factor (``effective_scaling = alpha / rank``).
+    lora_dropout : float
+        Dropout probability applied to the input before the LoRA path.
+        Default ``0.0`` (no dropout).
     target_modules : list of str or None
         If provided, only wrap layers whose full name contains one of these
         strings. Wraps all linear / conv layers when ``None``.
@@ -187,6 +201,7 @@ class LoRAGrowingModel(SequentialGrowingModel):
         self,
         model: nn.Module,
         alpha: float = 1.0,
+        lora_dropout: float = 0.0,
         target_modules: list[str] | None = None,
         in_features: int | None = None,
         out_features: int | None = None,
@@ -209,9 +224,12 @@ class LoRAGrowingModel(SequentialGrowingModel):
         )
 
         # Inject rank-0 LoRA wrappers into the model
-        _inject_lora_inplace(model, alpha=alpha, target_modules=target_modules)
+        _inject_lora_inplace(
+            model, alpha=alpha, lora_dropout=lora_dropout, target_modules=target_modules
+        )
         self.model = model
         self.alpha = alpha
+        self.lora_dropout = lora_dropout
 
         # Register LoRA modules as growable / growing layers
         lora_mods: list[GrowingLoRALinear | GrowingLoRAConv2d] = [
@@ -284,10 +302,13 @@ class LoRAGrowingModel(SequentialGrowingModel):
     def extra_repr(self) -> str:
         """Return extra representation string."""
         n = len(self.lora_modules())
-        return (
+        s = (
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"alpha={self.alpha}, lora_modules={n}"
         )
+        if self.lora_dropout > 0.0:
+            s += f", lora_dropout={self.lora_dropout}"
+        return s
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +319,7 @@ class LoRAGrowingModel(SequentialGrowingModel):
 def get_growing_lora_model(
     model: nn.Module,
     alpha: float = 1.0,
+    lora_dropout: float = 0.0,
     target_modules: list[str] | None = None,
     in_features: int | None = None,
     out_features: int | None = None,
@@ -317,6 +339,9 @@ def get_growing_lora_model(
         Pretrained model to adapt. Modified in-place.
     alpha : float
         LoRA scaling factor.
+    lora_dropout : float
+        Dropout probability applied to the input before the LoRA path.
+        Default ``0.0`` (no dropout).
     target_modules : list of str or None
         Name filter for which layers to wrap. ``None`` wraps all linear / conv
         layers.
@@ -334,15 +359,14 @@ def get_growing_lora_model(
     Examples
     --------
     >>> import torch.nn as nn
-    >>> from gromo.containers.lora_growth_container import get_growing_lora_model, fogro_growth_step
+    >>> from gromo.containers.lora_growth_container import get_growing_lora_model
     >>> base = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
     >>> model = get_growing_lora_model(base, alpha=1.0)
-    >>> # grow with FOGRO
-    >>> # fogro_growth_step(model, data_loader, loss_fn, method="fogro")
     """
     return LoRAGrowingModel(
         model=model,
         alpha=alpha,
+        lora_dropout=lora_dropout,
         target_modules=target_modules,
         in_features=in_features,
         out_features=out_features,
