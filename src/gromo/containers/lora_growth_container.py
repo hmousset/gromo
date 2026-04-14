@@ -97,6 +97,7 @@ def _inject_lora_inplace(
     model: nn.Module,
     alpha: float,
     lora_dropout: float,
+    use_dora: bool,
     target_modules: list[str] | None,
 ) -> None:
     """Replace targeted layers with LoRA wrappers in-place (rank 0).
@@ -109,6 +110,8 @@ def _inject_lora_inplace(
         LoRA scaling factor.
     lora_dropout : float
         Dropout probability for the LoRA path.
+    use_dora : bool
+        Whether to enable DoRA magnitude reparameterization.
     target_modules : list of str or None
         Name filter; ``None`` wraps all linear / conv layers.
     """
@@ -138,6 +141,7 @@ def _inject_lora_inplace(
                 rank=0,
                 alpha=alpha,
                 lora_dropout=lora_dropout,
+                use_dora=use_dora,
                 name=f"lora_{full_name}",
             )
         else:
@@ -146,6 +150,7 @@ def _inject_lora_inplace(
                 rank=0,
                 alpha=alpha,
                 lora_dropout=lora_dropout,
+                use_dora=use_dora,
                 name=f"lora_{full_name}",
             )
         replacements.append((parent, attr_name, replacement))
@@ -202,6 +207,7 @@ class LoRAGrowingModel(SequentialGrowingModel):
         model: nn.Module,
         alpha: float = 1.0,
         lora_dropout: float = 0.0,
+        use_dora: bool = False,
         target_modules: list[str] | None = None,
         in_features: int | None = None,
         out_features: int | None = None,
@@ -225,11 +231,16 @@ class LoRAGrowingModel(SequentialGrowingModel):
 
         # Inject rank-0 LoRA wrappers into the model
         _inject_lora_inplace(
-            model, alpha=alpha, lora_dropout=lora_dropout, target_modules=target_modules
+            model,
+            alpha=alpha,
+            lora_dropout=lora_dropout,
+            use_dora=use_dora,
+            target_modules=target_modules,
         )
         self.model = model
         self.alpha = alpha
         self.lora_dropout = lora_dropout
+        self.use_dora = use_dora
 
         # Register LoRA modules as growable / growing layers
         lora_mods: list[GrowingLoRALinear | GrowingLoRAConv2d] = [
@@ -306,6 +317,8 @@ class LoRAGrowingModel(SequentialGrowingModel):
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"alpha={self.alpha}, lora_modules={n}"
         )
+        if self.use_dora:
+            s += ", use_dora=True"
         if self.lora_dropout > 0.0:
             s += f", lora_dropout={self.lora_dropout}"
         return s
@@ -320,6 +333,7 @@ def get_growing_lora_model(
     model: nn.Module,
     alpha: float = 1.0,
     lora_dropout: float = 0.0,
+    use_dora: bool = False,
     target_modules: list[str] | None = None,
     in_features: int | None = None,
     out_features: int | None = None,
@@ -342,6 +356,8 @@ def get_growing_lora_model(
     lora_dropout : float
         Dropout probability applied to the input before the LoRA path.
         Default ``0.0`` (no dropout).
+    use_dora : bool
+        Whether to enable DoRA magnitude reparameterization.
     target_modules : list of str or None
         Name filter for which layers to wrap. ``None`` wraps all linear / conv
         layers.
@@ -367,6 +383,7 @@ def get_growing_lora_model(
         model=model,
         alpha=alpha,
         lora_dropout=lora_dropout,
+        use_dora=use_dora,
         target_modules=target_modules,
         in_features=in_features,
         out_features=out_features,
@@ -471,6 +488,9 @@ def get_lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
             )
             lora_state[f"{prefix}rank"] = torch.tensor(module.rank)
             lora_state[f"{prefix}alpha"] = torch.tensor(module.alpha)
+            lora_state[f"{prefix}use_dora"] = torch.tensor(module.use_dora)
+            if module.use_dora and module.magnitude is not None:
+                lora_state[f"{prefix}magnitude"] = module.magnitude.data.clone()
     return lora_state
 
 
@@ -493,6 +513,10 @@ def load_lora_state_dict(model: nn.Module, lora_state: dict[str, torch.Tensor]) 
                 B_data = lora_state[f"{prefix}second_layer.weight"]
                 new_rank = A_data.shape[0]
                 module.alpha = lora_state[f"{prefix}alpha"].item()
+                use_dora_key = f"{prefix}use_dora"
+                if use_dora_key in lora_state and bool(lora_state[use_dora_key].item()):
+                    if not module.use_dora:
+                        module.enable_dora()
                 if new_rank > module.rank and isinstance(module, GrowingLoRALinear):
                     added = new_rank - module.rank
                     module.first_layer.add_parameters(
@@ -512,3 +536,8 @@ def load_lora_state_dict(model: nn.Module, lora_state: dict[str, torch.Tensor]) 
                     module.second_layer.weight.copy_(
                         B_data.to(module.second_layer.weight.device)
                     )
+                    magnitude_key = f"{prefix}magnitude"
+                    if magnitude_key in lora_state and module.magnitude is not None:
+                        module.magnitude.copy_(
+                            lora_state[magnitude_key].to(module.magnitude.device)
+                        )

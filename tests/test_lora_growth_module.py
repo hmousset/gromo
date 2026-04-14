@@ -823,3 +823,110 @@ class TestLoRADropoutConv2d(TestCase):
         lora = GrowingLoRAConv2d(conv, rank=2, alpha=1.0)
         merged = lora.merge_lora()
         self.assertIsNone(merged.bias)
+
+
+class TestDoRALinear(TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_init_matches_base_layer(self):
+        linear = _linear(10, 20)
+        lora = GrowingLoRALinear(linear, rank=0, use_dora=True)
+        x = _randn(4, 10)
+        self.assertTrue(torch.allclose(lora(x), linear(x), atol=1e-6))
+
+    def test_explicit_device_skips_default_device_inference(self):
+        device = global_device()
+        linear = _linear(10, 20)
+        lora = GrowingLoRALinear(linear, rank=0, device=device, activation=nn.ReLU())
+        self.assertEqual(
+            lora.first_layer.weight.device, torch.device(linear.weight.device)
+        )
+
+    def test_extended_forward_dora_rank_zero(self):
+        lora = GrowingLoRALinear(_linear(10, 20), rank=0, use_dora=True)
+        x = _randn(3, 10)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (3, 20))
+
+    def test_extended_forward_dora_nonzero_rank(self):
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, use_dora=True)
+        x = _randn(3, 10)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (3, 20))
+
+    def test_magnitude_is_trainable(self):
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, use_dora=True)
+        self.assertIsNotNone(lora.magnitude)
+        assert lora.magnitude is not None
+        self.assertTrue(lora.magnitude.requires_grad)
+        self.assertTrue(any(p is lora.magnitude for p in lora.lora_parameters()))
+
+    def test_extra_repr_mentions_dora(self):
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, use_dora=True)
+        self.assertIn("use_dora=True", lora.extra_repr())
+
+    def test_merge_matches_forward(self):
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, alpha=4.0, use_dora=True)
+        nn.init.normal_(lora.first_layer.weight)
+        nn.init.normal_(lora.second_layer.weight)
+        with torch.no_grad():
+            assert lora.magnitude is not None
+            lora.magnitude.mul_(1.1)
+        x = _randn(6, 10)
+        with torch.no_grad():
+            out_lora = lora(x)
+            out_merged = lora.merge_lora()(x)
+        self.assertTrue(torch.allclose(out_lora, out_merged, atol=1e-5))
+
+
+class TestDoRAConv2d(TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_init_matches_base_layer(self):
+        conv = _conv2d(3, 8, 3, padding=1)
+        lora = GrowingLoRAConv2d(conv, rank=0, use_dora=True)
+        x = _randn(2, 3, 8, 8)
+        self.assertTrue(torch.allclose(lora(x), conv(x), atol=1e-6))
+
+    def test_explicit_device_skips_default_device_inference(self):
+        device = global_device()
+        conv = _conv2d(3, 8, 3, padding=1)
+        lora = GrowingLoRAConv2d(conv, rank=0, device=device, activation=nn.ReLU())
+        self.assertEqual(lora.first_layer.weight.device, torch.device(conv.weight.device))
+
+    def test_extended_forward_dora_rank_zero(self):
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=0, use_dora=True)
+        x = _randn(2, 3, 8, 8)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (2, 8, 8, 8))
+
+    def test_extended_forward_dora_nonzero_rank(self):
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, use_dora=True)
+        x = _randn(2, 3, 8, 8)
+        out = lora.extended_forward(x)
+        self.assertEqual(out.shape, (2, 8, 8, 8))
+
+    def test_magnitude_is_trainable(self):
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, use_dora=True)
+        self.assertIsNotNone(lora.magnitude)
+        assert lora.magnitude is not None
+        self.assertTrue(any(p is lora.magnitude for p in lora.lora_parameters()))
+
+    def test_extra_repr_mentions_dora(self):
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, use_dora=True)
+        self.assertIn("use_dora=True", lora.extra_repr())
+
+    def test_merge_matches_forward(self):
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, use_dora=True)
+        nn.init.normal_(lora.first_layer.weight)
+        nn.init.normal_(lora.second_layer.weight)
+        with torch.no_grad():
+            assert lora.magnitude is not None
+            lora.magnitude.mul_(0.9)
+        x = _randn(2, 3, 8, 8)
+        with torch.no_grad():
+            out_lora = lora(x)
+            out_merged = lora.merge_lora()(x)
+        self.assertTrue(torch.allclose(out_lora, out_merged, atol=1e-5))

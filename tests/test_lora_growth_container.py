@@ -654,3 +654,56 @@ class TestLoadLoRAStateDictCoverage(TestCase):
         _ = lora_model(x)
         lora_model.merge_lora()
         self.assertEqual(lora_model(x).shape, (2, 8))
+
+
+class TestDoRAContainer(TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def test_use_dora_propagates_to_modules(self):
+        model = _make_simple_model()
+        lora_model = get_growing_lora_model(model, use_dora=True)
+        self.assertTrue(lora_model.use_dora)
+        for module in lora_model.lora_modules():
+            self.assertTrue(module.use_dora)
+            self.assertIsNotNone(module.magnitude)
+
+    def test_extra_repr_mentions_dora(self):
+        model = _make_simple_model()
+        lora_model = get_growing_lora_model(model, use_dora=True)
+        self.assertIn("use_dora=True", lora_model.extra_repr())
+
+    def test_dora_state_dict_roundtrip(self):
+        model = _make_simple_model()
+        lora_model = get_growing_lora_model(model, use_dora=True)
+        for module in lora_model.lora_modules():
+            with torch.no_grad():
+                assert module.magnitude is not None
+                module.magnitude.add_(0.5)
+
+        state = lora_model.lora_state_dict()
+
+        model2 = _make_simple_model()
+        lora_model2 = get_growing_lora_model(model2, use_dora=False)
+        lora_model2.load_lora_state_dict(state)
+
+        for m1, m2 in zip(
+            lora_model.lora_modules(), lora_model2.lora_modules(), strict=True
+        ):
+            self.assertTrue(m2.use_dora)
+            self.assertIsNotNone(m1.magnitude)
+            self.assertIsNotNone(m2.magnitude)
+            self.assertTrue(torch.allclose(m1.magnitude, m2.magnitude))
+
+    def test_dora_state_dict_load_when_target_already_uses_dora(self):
+        model = _make_simple_model()
+        lora_model = get_growing_lora_model(model, use_dora=True)
+        state = lora_model.lora_state_dict()
+
+        model2 = _make_simple_model()
+        lora_model2 = get_growing_lora_model(model2, use_dora=True)
+        lora_model2.load_lora_state_dict(state)
+
+        for module in lora_model2.lora_modules():
+            self.assertTrue(module.use_dora)
+            self.assertIsNotNone(module.magnitude)

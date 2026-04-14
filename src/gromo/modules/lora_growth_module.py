@@ -16,6 +16,7 @@ import warnings
 
 import torch
 import torch.nn as nn
+from torch import functional as torch_functional
 
 from gromo.containers.growing_block import Conv2dGrowingBlock, LinearGrowingBlock
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
@@ -46,6 +47,9 @@ class GrowingLoRALinear(LinearGrowingBlock):
     lora_dropout : float
         Dropout probability applied to the input before the LoRA path.
         Disabled (``p=0.0``) by default.
+    use_dora : bool
+        If ``True``, use DoRA-style magnitude reparameterization on top of the
+        LoRA direction update.
     target_rank : int | None
         Target rank for the growing block.
     activation : torch.nn.Module | None
@@ -62,6 +66,7 @@ class GrowingLoRALinear(LinearGrowingBlock):
         rank: int = 0,
         alpha: float = 1.0,
         lora_dropout: float = 0.0,
+        use_dora: bool = False,
         target_rank: int | None = None,
         activation: torch.nn.Module | None = None,
         device: torch.device | None = None,
@@ -94,6 +99,10 @@ class GrowingLoRALinear(LinearGrowingBlock):
             )
         self.linear = linear
         self.lora_dropout = nn.Dropout(p=lora_dropout)
+        self.use_dora = False
+        self.magnitude: nn.Parameter | None = None
+        if use_dora:
+            self.enable_dora()
 
     @property
     def rank(self) -> int:
@@ -117,6 +126,28 @@ class GrowingLoRALinear(LinearGrowingBlock):
         """Original bias (read-only)."""
         return self.linear.bias
 
+    def _weight_norm(self, weight: torch.Tensor) -> torch.Tensor:
+        return weight.norm(dim=1, keepdim=True).clamp_min(torch.finfo(weight.dtype).eps)
+
+    def _delta_weight(self) -> torch.Tensor:
+        if self.rank == 0:
+            return torch.zeros_like(self.linear.weight)
+        return self.scaling * (self.second_layer.weight @ self.first_layer.weight)
+
+    def _effective_weight(self) -> torch.Tensor:
+        weight = self.linear.weight + self._delta_weight()
+        if not self.use_dora:
+            return weight
+        assert self.magnitude is not None
+        return self.magnitude[:, None] * (weight / self._weight_norm(weight))
+
+    def enable_dora(self) -> None:
+        """Enable DoRA magnitude reparameterization."""
+        self.use_dora = True
+        with torch.no_grad():
+            magnitude = self._weight_norm(self.linear.weight).squeeze(1)
+        self.magnitude = nn.Parameter(magnitude.clone())
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward: ``original(x) + scaling * B(A(x))``.
 
@@ -130,8 +161,15 @@ class GrowingLoRALinear(LinearGrowingBlock):
         torch.Tensor
             Output of shape ``(..., out_features)``.
         """
-        base_out = self.linear(x)
+        if not self.use_dora:
+            base_out = self.linear(x)
+        else:
+            base_out = torch_functional.F.linear(
+                x, self._effective_weight(), self.linear.bias
+            )
         if self.rank == 0 and not self.first_layer.store_input:
+            return base_out
+        if self.use_dora:
             return base_out
         x_lora = self.lora_dropout(x)
         block_out = super().forward(x_lora)
@@ -150,7 +188,15 @@ class GrowingLoRALinear(LinearGrowingBlock):
         -------
         torch.Tensor
         """
-        base_out = self.linear(x)
+        if not self.use_dora:
+            base_out = self.linear(x)
+        else:
+            base_out = torch_functional.F.linear(
+                x, self._effective_weight(), self.linear.bias
+            )
+            if self.rank == 0 and self.first_layer.extended_output_layer is None:
+                return base_out
+            return base_out
         x_lora = self.lora_dropout(x)
         block_out = super().extended_forward(x_lora)
         if self.rank == 0 and self.first_layer.extended_output_layer is None:
@@ -173,18 +219,19 @@ class GrowingLoRALinear(LinearGrowingBlock):
             dtype=self.linear.weight.dtype,
         )
         with torch.no_grad():
-            if self.rank > 0:
-                delta = self.second_layer.weight @ self.first_layer.weight
-                merged.weight.copy_(self.linear.weight + self.scaling * delta)
-            else:
-                merged.weight.copy_(self.linear.weight)
+            merged.weight.copy_(self._effective_weight())
             if self.linear.bias is not None:
                 merged.bias.copy_(self.linear.bias)
         return merged
 
     def lora_parameters(self) -> list[nn.Parameter]:
         """Return only the trainable LoRA parameters (A and B layers)."""
-        return list(self.first_layer.parameters()) + list(self.second_layer.parameters())
+        params = list(self.first_layer.parameters()) + list(
+            self.second_layer.parameters()
+        )
+        if self.use_dora and self.magnitude is not None:
+            params.append(self.magnitude)
+        return params
 
     def reset_lora(self) -> None:
         """Reset LoRA to zero output."""
@@ -198,6 +245,8 @@ class GrowingLoRALinear(LinearGrowingBlock):
             f"in_features={self.in_features}, out_features={self.out_features}, "
             f"rank={self.rank}, alpha={self.alpha}"
         )
+        if self.use_dora:
+            s += ", use_dora=True"
         if dropout_p > 0.0:
             s += f", lora_dropout={dropout_p}"
         return s
@@ -222,6 +271,9 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
     lora_dropout : float
         Dropout probability applied to the input before the LoRA path.
         Disabled (``p=0.0``) by default.
+    use_dora : bool
+        If ``True``, use DoRA-style magnitude reparameterization on top of the
+        LoRA direction update.
     target_rank : int | None
         Target rank for the growing block.
     activation : torch.nn.Module | None
@@ -238,6 +290,7 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         rank: int = 0,
         alpha: float = 1.0,
         lora_dropout: float = 0.0,
+        use_dora: bool = False,
         target_rank: int | None = None,
         activation: torch.nn.Module | None = None,
         device: torch.device | None = None,
@@ -289,6 +342,10 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
             )
         self.conv = conv
         self.lora_dropout = nn.Dropout(p=lora_dropout)
+        self.use_dora = False
+        self.magnitude: nn.Parameter | None = None
+        if use_dora:
+            self.enable_dora()
 
     @property
     def rank(self) -> int:
@@ -312,6 +369,45 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         """Original bias (read-only)."""
         return self.conv.bias
 
+    def _conv_base(self) -> nn.Conv2d:
+        if isinstance(self.conv, Conv2dGrowingModule):
+            return self.conv.layer
+        return self.conv
+
+    def _weight_norm(self, weight: torch.Tensor) -> torch.Tensor:
+        return (
+            weight.flatten(1)
+            .norm(dim=1, keepdim=True)
+            .clamp_min(torch.finfo(weight.dtype).eps)[:, None, None]
+        )
+
+    def _delta_weight(self) -> torch.Tensor:
+        orig = self._conv_base()
+        if self.rank == 0:
+            return torch.zeros_like(orig.weight)
+        a_w = self.first_layer.weight
+        b_w = self.second_layer.weight
+        b_mat = b_w.squeeze(-1).squeeze(-1)
+        a_flat = a_w.view(a_w.shape[0], -1)
+        delta_flat = b_mat @ a_flat
+        return self.scaling * delta_flat.view_as(orig.weight)
+
+    def _effective_weight(self) -> torch.Tensor:
+        orig = self._conv_base()
+        weight = orig.weight + self._delta_weight()
+        if not self.use_dora:
+            return weight
+        assert self.magnitude is not None
+        return self.magnitude[:, None, None, None] * (weight / self._weight_norm(weight))
+
+    def enable_dora(self) -> None:
+        """Enable DoRA magnitude reparameterization."""
+        self.use_dora = True
+        orig = self._conv_base()
+        with torch.no_grad():
+            magnitude = self._weight_norm(orig.weight).reshape(-1)
+        self.magnitude = nn.Parameter(magnitude.clone())
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward: ``conv(x) + scaling * B(A(x))``.
 
@@ -325,8 +421,22 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         torch.Tensor
             Output of shape ``(N, C_out, H_out, W_out)``.
         """
-        base_out = self.conv(x)
+        if not self.use_dora:
+            base_out = self.conv(x)
+        else:
+            orig = self._conv_base()
+            base_out = torch_functional.F.conv2d(
+                x,
+                self._effective_weight(),
+                orig.bias,
+                orig.stride,
+                orig.padding,
+                orig.dilation,
+                orig.groups,
+            )
         if self.rank == 0 and not self.first_layer.store_input:
+            return base_out
+        if self.use_dora:
             return base_out
         x_lora = self.lora_dropout(x)
         block_out = super().forward(x_lora)
@@ -345,7 +455,22 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         -------
         torch.Tensor
         """
-        base_out = self.conv(x)
+        if not self.use_dora:
+            base_out = self.conv(x)
+        else:
+            orig = self._conv_base()
+            base_out = torch_functional.F.conv2d(
+                x,
+                self._effective_weight(),
+                orig.bias,
+                orig.stride,
+                orig.padding,
+                orig.dilation,
+                orig.groups,
+            )
+            if self.rank == 0 and self.first_layer.extended_output_layer is None:
+                return base_out
+            return base_out
         x_lora = self.lora_dropout(x)
         block_out = super().extended_forward(x_lora)
         if self.rank == 0 and self.first_layer.extended_output_layer is None:
@@ -363,10 +488,7 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
         nn.Conv2d
             New conv layer with merged weights.
         """
-        if isinstance(self.conv, Conv2dGrowingModule):
-            orig = self.conv.layer
-        else:
-            orig = self.conv
+        orig = self._conv_base()
         merged = nn.Conv2d(
             self.in_channels,
             self.out_channels,
@@ -380,23 +502,19 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
             dtype=orig.weight.dtype,
         )
         with torch.no_grad():
-            if self.rank > 0:
-                a_w = self.first_layer.weight  # (rank, in_ch, kH, kW)
-                b_w = self.second_layer.weight  # (out_ch, rank, 1, 1)
-                b_mat = b_w.squeeze(-1).squeeze(-1)  # (out_ch, rank)
-                a_flat = a_w.view(a_w.shape[0], -1)  # (rank, in_ch*kH*kW)
-                delta_flat = b_mat @ a_flat  # (out_ch, in_ch*kH*kW)
-                delta = delta_flat.view_as(orig.weight)
-                merged.weight.copy_(orig.weight + self.scaling * delta)
-            else:
-                merged.weight.copy_(orig.weight)
+            merged.weight.copy_(self._effective_weight())
             if orig.bias is not None:
                 merged.bias.copy_(orig.bias)
         return merged
 
     def lora_parameters(self) -> list[nn.Parameter]:
         """Return only the trainable LoRA parameters (A and B layers)."""
-        return list(self.first_layer.parameters()) + list(self.second_layer.parameters())
+        params = list(self.first_layer.parameters()) + list(
+            self.second_layer.parameters()
+        )
+        if self.use_dora and self.magnitude is not None:
+            params.append(self.magnitude)
+        return params
 
     def extra_repr(self) -> str:
         """Return extra representation string."""
@@ -405,6 +523,8 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
             f"in_channels={self.in_channels}, out_channels={self.out_channels}, "
             f"rank={self.rank}, alpha={self.alpha}"
         )
+        if self.use_dora:
+            s += ", use_dora=True"
         if dropout_p > 0.0:
             s += f", lora_dropout={dropout_p}"
         return s
