@@ -22,13 +22,30 @@ from gromo.containers.lora_growth_container import (
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.modules.lora_growth_module import GrowingLoRAConv2d, GrowingLoRALinear
+from gromo.utils.utils import global_device
+
+
+def _linear(*args, **kwargs):
+    return nn.Linear(*args, device=global_device(), **kwargs)
+
+
+def _conv2d(*args, **kwargs):
+    return nn.Conv2d(*args, device=global_device(), **kwargs)
+
+
+def _randn(*args, **kwargs):
+    return torch.randn(*args, device=global_device(), **kwargs)
+
+
+def _ones(*args, **kwargs):
+    return torch.ones(*args, device=global_device(), **kwargs)
 
 
 class TestGrowingLoRALinearInit(TestCase):
     """Tests for GrowingLoRALinear initialization."""
 
     def test_basic_init(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4, alpha=2.0)
         self.assertIsInstance(lora, LinearGrowingBlock)
         self.assertEqual(lora.in_features, 10)
@@ -37,19 +54,19 @@ class TestGrowingLoRALinearInit(TestCase):
         self.assertEqual(lora.alpha, 2.0)
 
     def test_init_rank_zero(self):
-        linear = nn.Linear(5, 3)
+        linear = _linear(5, 3)
         lora = GrowingLoRALinear(linear, rank=0)
         self.assertEqual(lora.rank, 0)
         self.assertAlmostEqual(lora.scaling, 0.0)
 
     def test_original_frozen(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         for p in lora.linear.parameters():
             self.assertFalse(p.requires_grad)
 
     def test_lora_params_trainable(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         params = lora.lora_parameters()
         self.assertTrue(len(params) > 0)
@@ -57,17 +74,17 @@ class TestGrowingLoRALinearInit(TestCase):
             self.assertTrue(p.requires_grad)
 
     def test_scaling_property(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4, alpha=2.0)
         self.assertAlmostEqual(lora.scaling, 0.5)
 
     def test_scaling_property_larger(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4, alpha=8.0)
         self.assertAlmostEqual(lora.scaling, 2.0)
 
     def test_first_second_layer_properties(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         self.assertEqual(lora.first_layer.in_features, 10)
         self.assertEqual(lora.first_layer.out_features, 4)
@@ -75,18 +92,18 @@ class TestGrowingLoRALinearInit(TestCase):
         self.assertEqual(lora.second_layer.out_features, 20)
 
     def test_weight_bias_properties(self):
-        linear = nn.Linear(10, 20, bias=True)
+        linear = _linear(10, 20, bias=True)
         lora = GrowingLoRALinear(linear, rank=2)
         self.assertIs(lora.weight, linear.weight)
         self.assertIs(lora.bias, linear.bias)
 
     def test_no_bias(self):
-        linear = nn.Linear(10, 20, bias=False)
+        linear = _linear(10, 20, bias=False)
         lora = GrowingLoRALinear(linear, rank=2)
         self.assertIsNone(lora.bias)
 
     def test_extra_repr(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4, alpha=2.0)
         r = lora.extra_repr()
         self.assertIn("in_features=10", r)
@@ -102,50 +119,50 @@ class TestGrowingLoRALinearForward(TestCase):
         torch.manual_seed(42)
 
     def test_forward_shape(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
-        x = torch.randn(5, 10)
+        x = _randn(5, 10)
         out = lora(x)
         self.assertEqual(out.shape, (5, 20))
 
     def test_forward_rank_zero_equals_original(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=0)
-        x = torch.randn(5, 10)
+        x = _randn(5, 10)
         out_lora = lora(x)
         out_orig = linear(x)
         self.assertTrue(torch.allclose(out_lora, out_orig))
 
     def test_forward_with_nonzero_weights(self):
         """With non-zero B weights, output differs from original."""
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         nn.init.normal_(lora.second_layer.weight)
-        x = torch.randn(5, 10)
+        x = _randn(5, 10)
         out_lora = lora(x)
         out_orig = linear(x)
         self.assertFalse(torch.allclose(out_lora, out_orig))
 
     def test_forward_3d_input(self):
         """Test with sequence-like input (batch, seq, features)."""
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
-        x = torch.randn(3, 7, 10)
+        x = _randn(3, 7, 10)
         out = lora(x)
         self.assertEqual(out.shape, (3, 7, 20))
 
     def test_forward_batched(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
-        x = torch.randn(5, 8, 10)
+        x = _randn(5, 8, 10)
         y = lora(x)
         self.assertEqual(y.shape, (5, 8, 20))
 
     def test_gradient_flows_to_lora_only(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         nn.init.normal_(lora.second_layer.weight)
-        x = torch.randn(5, 10)
+        x = _randn(5, 10)
         out = lora(x)
         loss = out.sum()
         loss.backward()
@@ -163,7 +180,7 @@ class TestGrowingLoRALinearMerge(TestCase):
         torch.manual_seed(42)
 
     def test_merge_produces_linear(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         merged = lora.merge_lora()
         self.assertIsInstance(merged, nn.Linear)
@@ -172,11 +189,11 @@ class TestGrowingLoRALinearMerge(TestCase):
 
     def test_merge_output_matches_forward(self):
         """Merged layer should produce same output as LoRA forward."""
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4, alpha=4.0)
         nn.init.normal_(lora.first_layer.weight)
         nn.init.normal_(lora.second_layer.weight)
-        x = torch.randn(8, 10)
+        x = _randn(8, 10)
         with torch.no_grad():
             out_lora = lora(x)
             merged = lora.merge_lora()
@@ -187,14 +204,14 @@ class TestGrowingLoRALinearMerge(TestCase):
         )
 
     def test_merge_rank_zero(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         w_orig = linear.weight.data.clone()
         lora = GrowingLoRALinear(linear, rank=0)
         merged = lora.merge_lora()
         self.assertTrue(torch.allclose(merged.weight, w_orig))
 
     def test_merge_with_bias(self):
-        linear = nn.Linear(10, 20, bias=True)
+        linear = _linear(10, 20, bias=True)
         b_orig = linear.bias.data.clone()
         lora = GrowingLoRALinear(linear, rank=4)
         merged = lora.merge_lora()
@@ -202,13 +219,13 @@ class TestGrowingLoRALinearMerge(TestCase):
         self.assertTrue(torch.allclose(merged.bias, b_orig))
 
     def test_merge_without_bias(self):
-        linear = nn.Linear(10, 20, bias=False)
+        linear = _linear(10, 20, bias=False)
         lora = GrowingLoRALinear(linear, rank=4)
         merged = lora.merge_lora()
         self.assertIsNone(merged.bias)
 
     def test_merge_does_not_modify_original(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         original_weight = linear.weight.data.clone()
         lora = GrowingLoRALinear(linear, rank=4)
         nn.init.normal_(lora.second_layer.weight)
@@ -220,7 +237,7 @@ class TestGrowingLoRALinearUtilities(TestCase):
     """Tests for GrowingLoRALinear utility methods."""
 
     def test_lora_parameters(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         params = lora.lora_parameters()
         self.assertTrue(len(params) > 0)
@@ -228,7 +245,7 @@ class TestGrowingLoRALinearUtilities(TestCase):
             self.assertTrue(p.requires_grad)
 
     def test_reset_lora(self):
-        linear = nn.Linear(10, 20)
+        linear = _linear(10, 20)
         lora = GrowingLoRALinear(linear, rank=4)
         nn.init.normal_(lora.second_layer.weight)
         lora.reset_lora()
@@ -252,7 +269,7 @@ class TestFOGROGrowthPipeline(TestCase):
         self.batch_size = 16
 
     def _make_lora(self, rank=0):
-        linear = nn.Linear(self.in_features, self.out_features)
+        linear = _linear(self.in_features, self.out_features)
         return GrowingLoRALinear(linear, rank=rank, alpha=1.0)
 
     def test_init_computation(self):
@@ -274,7 +291,7 @@ class TestFOGROGrowthPipeline(TestCase):
 
         lora.init_computation()
 
-        x = torch.randn(self.batch_size, self.in_features)
+        x = _randn(self.batch_size, self.in_features)
         lora.zero_grad()
         output = lora(x)
         loss = (output**2).sum() / 2
@@ -302,7 +319,7 @@ class TestFOGROGrowthPipeline(TestCase):
         self.assertEqual(lora.rank, old_rank + 2)
 
         # Verify forward still works
-        x2 = torch.randn(3, self.in_features)
+        x2 = _randn(3, self.in_features)
         y = lora(x2)
         self.assertEqual(y.shape, (3, self.out_features))
 
@@ -314,7 +331,7 @@ class TestFOGROGrowthPipeline(TestCase):
 
         lora.init_computation()
 
-        x = torch.randn(self.batch_size, self.in_features)
+        x = _randn(self.batch_size, self.in_features)
         lora.zero_grad()
         output = lora(x)
         loss = (output**2).sum() / 2
@@ -345,7 +362,7 @@ class TestFOGROGrowthPipeline(TestCase):
         lora = self._make_lora(rank=2)
 
         lora.init_computation()
-        x = torch.randn(self.batch_size, self.in_features)
+        x = _randn(self.batch_size, self.in_features)
         lora.zero_grad()
         output = lora(x)
         loss = (output**2).sum() / 2
@@ -368,7 +385,7 @@ class TestFOGROGrowthPipeline(TestCase):
         """Test that first_order_improvement is accessible after compute."""
         lora = self._make_lora(rank=0)
         lora.init_computation()
-        x = torch.randn(self.batch_size, self.in_features)
+        x = _randn(self.batch_size, self.in_features)
         lora.zero_grad()
         output = lora(x)
         loss = (output**2).sum() / 2
@@ -394,35 +411,45 @@ class TestGrowingLoRALinearWithLinearGrowingModule(TestCase):
         torch.manual_seed(42)
 
     def test_init_from_linear_growing_module(self):
-        lgm = LinearGrowingModule(in_features=10, out_features=20, name="test")
+        lgm = LinearGrowingModule(
+            in_features=10, out_features=20, name="test", device=global_device()
+        )
         lora = GrowingLoRALinear(lgm, rank=4, alpha=2.0)
         self.assertEqual(lora.in_features, 10)
         self.assertEqual(lora.out_features, 20)
         self.assertEqual(lora.rank, 4)
 
     def test_forward_shape(self):
-        lgm = LinearGrowingModule(in_features=10, out_features=20, name="test")
+        lgm = LinearGrowingModule(
+            in_features=10, out_features=20, name="test", device=global_device()
+        )
         lora = GrowingLoRALinear(lgm, rank=4)
-        x = torch.randn(5, 10)
+        x = _randn(5, 10)
         out = lora(x)
         self.assertEqual(out.shape, (5, 20))
 
     def test_forward_rank_zero(self):
-        lgm = LinearGrowingModule(in_features=10, out_features=20, name="test")
+        lgm = LinearGrowingModule(
+            in_features=10, out_features=20, name="test", device=global_device()
+        )
         lora = GrowingLoRALinear(lgm, rank=0)
-        x = torch.randn(5, 10)
+        x = _randn(5, 10)
         out_lora = lora(x)
         out_orig = lgm(x)
         self.assertTrue(torch.allclose(out_lora, out_orig))
 
     def test_frozen(self):
-        lgm = LinearGrowingModule(in_features=10, out_features=20, name="test")
+        lgm = LinearGrowingModule(
+            in_features=10, out_features=20, name="test", device=global_device()
+        )
         GrowingLoRALinear(lgm, rank=4)
         for p in lgm.parameters():
             self.assertFalse(p.requires_grad)
 
     def test_merge_lora(self):
-        lgm = LinearGrowingModule(in_features=10, out_features=20, name="test")
+        lgm = LinearGrowingModule(
+            in_features=10, out_features=20, name="test", device=global_device()
+        )
         lora = GrowingLoRALinear(lgm, rank=4)
         merged = lora.merge_lora()
         self.assertIsInstance(merged, nn.Linear)
@@ -430,8 +457,12 @@ class TestGrowingLoRALinearWithLinearGrowingModule(TestCase):
 
     def test_apply_growing_lora_on_lgm_model(self):
         """get_growing_lora_model should detect LinearGrowingModule layers."""
-        lgm1 = LinearGrowingModule(in_features=10, out_features=20, name="l1")
-        lgm2 = LinearGrowingModule(in_features=20, out_features=5, name="l2")
+        lgm1 = LinearGrowingModule(
+            in_features=10, out_features=20, name="l1", device=global_device()
+        )
+        lgm2 = LinearGrowingModule(
+            in_features=20, out_features=5, name="l2", device=global_device()
+        )
         model = nn.Sequential(lgm1, nn.ReLU(), lgm2)
         lora_model = get_growing_lora_model(model)
         lora_mods = get_lora_modules(lora_model)
@@ -440,11 +471,15 @@ class TestGrowingLoRALinearWithLinearGrowingModule(TestCase):
             self.assertIsInstance(m, GrowingLoRALinear)
 
     def test_forward_after_apply_on_lgm_model(self):
-        lgm1 = LinearGrowingModule(in_features=10, out_features=20, name="l1")
-        lgm2 = LinearGrowingModule(in_features=20, out_features=5, name="l2")
+        lgm1 = LinearGrowingModule(
+            in_features=10, out_features=20, name="l1", device=global_device()
+        )
+        lgm2 = LinearGrowingModule(
+            in_features=20, out_features=5, name="l2", device=global_device()
+        )
         model = nn.Sequential(lgm1, nn.ReLU(), lgm2)
         lora_model = get_growing_lora_model(model)
-        x = torch.randn(3, 10)
+        x = _randn(3, 10)
         out = lora_model(x)
         self.assertEqual(out.shape, (3, 5))
 
@@ -456,7 +491,7 @@ class TestGrowingLoRAConv2dInit(TestCase):
     """Tests for GrowingLoRAConv2d initialization."""
 
     def test_basic_init(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4, alpha=2.0)
         self.assertEqual(lora.in_channels, 3)
         self.assertEqual(lora.out_channels, 16)
@@ -464,19 +499,19 @@ class TestGrowingLoRAConv2dInit(TestCase):
         self.assertEqual(lora.alpha, 2.0)
 
     def test_init_rank_zero(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=0)
         self.assertEqual(lora.rank, 0)
         self.assertAlmostEqual(lora.scaling, 0.0)
 
     def test_original_frozen(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4)
         for p in lora.conv.parameters():
             self.assertFalse(p.requires_grad)
 
     def test_lora_params_trainable(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4)
         params = lora.lora_parameters()
         self.assertTrue(len(params) > 0)
@@ -484,18 +519,18 @@ class TestGrowingLoRAConv2dInit(TestCase):
             self.assertTrue(p.requires_grad)
 
     def test_scaling(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4, alpha=8.0)
         self.assertAlmostEqual(lora.scaling, 2.0)
 
     def test_weight_bias_properties(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1, bias=True)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1, bias=True)
         lora = GrowingLoRAConv2d(conv, rank=2)
         self.assertIs(lora.weight, conv.weight)
         self.assertIs(lora.bias, conv.bias)
 
     def test_extra_repr(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4, alpha=2.0)
         r = lora.extra_repr()
         self.assertIn("in_channels=3", r)
@@ -510,32 +545,32 @@ class TestGrowingLoRAConv2dForward(TestCase):
         torch.manual_seed(42)
 
     def test_forward_shape(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4)
-        x = torch.randn(2, 3, 8, 8)
+        x = _randn(2, 3, 8, 8)
         out = lora(x)
         self.assertEqual(out.shape, (2, 16, 8, 8))
 
     def test_forward_rank_zero_equals_original(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=0)
-        x = torch.randn(2, 3, 8, 8)
+        x = _randn(2, 3, 8, 8)
         out_lora = lora(x)
         out_orig = conv(x)
         self.assertTrue(torch.allclose(out_lora, out_orig))
 
     def test_forward_with_stride(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, stride=2, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4)
-        x = torch.randn(2, 3, 8, 8)
+        x = _randn(2, 3, 8, 8)
         out = lora(x)
         self.assertEqual(out.shape, (2, 16, 4, 4))
 
     def test_gradient_flows_to_lora_only(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4)
         nn.init.normal_(lora.second_layer.weight)
-        x = torch.randn(2, 3, 8, 8)
+        x = _randn(2, 3, 8, 8)
         out = lora(x)
         loss = out.sum()
         loss.backward()
@@ -551,14 +586,14 @@ class TestGrowingLoRAConv2dMerge(TestCase):
         torch.manual_seed(42)
 
     def test_merge_rank_zero(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=0)
         merged = lora.merge_lora()
         self.assertIsInstance(merged, nn.Conv2d)
         self.assertTrue(torch.allclose(merged.weight, conv.weight))
 
     def test_merge_preserves_shape(self):
-        conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        conv = _conv2d(3, 16, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=4)
         merged = lora.merge_lora()
         self.assertEqual(merged.weight.shape, conv.weight.shape)
@@ -571,12 +606,12 @@ class TestGrowingLoRAConv2dFOGRO(TestCase):
         torch.manual_seed(42)
 
     def test_fogro_pipeline_rank_zero(self):
-        conv = nn.Conv2d(3, 8, kernel_size=3, padding=1)
+        conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=0, alpha=1.0)
 
         lora.init_computation()
 
-        x = torch.randn(4, 3, 8, 8)
+        x = _randn(4, 3, 8, 8)
         out = lora(x)
         loss = out.sum()
         loss.backward()
@@ -599,11 +634,11 @@ class TestGrowingLoRAConv2dFOGRO(TestCase):
         self.assertGreater(lora.rank, 0)
 
     def test_forward_after_growth(self):
-        conv = nn.Conv2d(3, 8, kernel_size=3, padding=1)
+        conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowingLoRAConv2d(conv, rank=0, alpha=1.0)
 
         lora.init_computation()
-        x = torch.randn(4, 3, 8, 8)
+        x = _randn(4, 3, 8, 8)
         out = lora(x)
         loss = out.sum()
         loss.backward()
@@ -621,7 +656,7 @@ class TestGrowingLoRAConv2dFOGRO(TestCase):
         lora.apply_change(scaling_factor=1.0, extension_size=2)
         lora.reset_computation()
 
-        x2 = torch.randn(2, 3, 8, 8)
+        x2 = _randn(2, 3, 8, 8)
         out = lora(x2)
         self.assertEqual(out.shape, (2, 8, 8, 8))
 
@@ -636,59 +671,59 @@ class TestLoRADropoutLinear(TestCase):
         torch.manual_seed(0)
 
     def test_dropout_stored(self):
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4, lora_dropout=0.3)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, lora_dropout=0.3)
         self.assertAlmostEqual(lora.lora_dropout.p, 0.3)
 
     def test_forward_train_mode_is_stochastic(self):
         """In train mode with dropout, two forwards should differ."""
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4, lora_dropout=0.9)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, lora_dropout=0.9)
         lora.train()
-        x = torch.ones(16, 10)
+        x = _ones(16, 10)
         out1 = lora(x)
         out2 = lora(x)
         self.assertFalse(torch.allclose(out1, out2))
 
     def test_forward_eval_mode_is_deterministic(self):
         """In eval mode, dropout is disabled — two forwards must be identical."""
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4, lora_dropout=0.9)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4, lora_dropout=0.9)
         lora.eval()
-        x = torch.ones(16, 10)
+        x = _ones(16, 10)
         self.assertTrue(torch.allclose(lora(x), lora(x)))
 
     def test_extra_repr_shows_dropout(self):
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=2, lora_dropout=0.25)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=2, lora_dropout=0.25)
         self.assertIn("lora_dropout=0.25", lora.extra_repr())
 
     def test_extra_repr_no_dropout_by_default(self):
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=2)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=2)
         self.assertNotIn("lora_dropout", lora.extra_repr())
 
     def test_extended_forward_with_nonzero_rank(self):
         """extended_forward with rank > 0 returns base + scaling * lora."""
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=4)
-        x = torch.randn(3, 10)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=4)
+        x = _randn(3, 10)
         out = lora.extended_forward(x)
         self.assertEqual(out.shape, (3, 20))
 
     def test_forward_rank0_store_input(self):
         """rank=0 with store_input=True (after init_computation) uses lora path."""
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=0, lora_dropout=0.5)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=0, lora_dropout=0.5)
         lora.init_computation()
-        x = torch.randn(4, 10)
+        x = _randn(4, 10)
         out = lora(x)
         self.assertEqual(out.shape, (4, 20))
         lora.reset_computation()
 
     def test_explicit_activation_skips_default(self):
         """Passing activation explicitly skips the `if activation is None` branch."""
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=2, activation=nn.ReLU())
-        x = torch.randn(3, 10)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=2, activation=nn.ReLU())
+        x = _randn(3, 10)
         self.assertEqual(lora(x).shape, (3, 20))
 
     def test_extended_forward_rank_zero(self):
         """extended_forward with rank=0 and no growth returns early (line 155)."""
-        lora = GrowingLoRALinear(nn.Linear(10, 20), rank=0)
-        x = torch.randn(3, 10)
+        lora = GrowingLoRALinear(_linear(10, 20), rank=0)
+        x = _randn(3, 10)
         out = lora.extended_forward(x)
         self.assertEqual(out.shape, (3, 20))
 
@@ -700,40 +735,40 @@ class TestLoRADropoutConv2d(TestCase):
         torch.manual_seed(0)
 
     def test_dropout_stored(self):
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.3)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.3)
         self.assertAlmostEqual(lora.lora_dropout.p, 0.3)
 
     def test_forward_train_mode_is_stochastic(self):
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.9)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.9)
         lora.train()
-        x = torch.ones(4, 3, 8, 8)
+        x = _ones(4, 3, 8, 8)
         self.assertFalse(torch.allclose(lora(x), lora(x)))
 
     def test_forward_eval_mode_is_deterministic(self):
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.9)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, lora_dropout=0.9)
         lora.eval()
-        x = torch.ones(4, 3, 8, 8)
+        x = _ones(4, 3, 8, 8)
         self.assertTrue(torch.allclose(lora(x), lora(x)))
 
     def test_extra_repr_shows_dropout(self):
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3), rank=2, lora_dropout=0.5)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3), rank=2, lora_dropout=0.5)
         self.assertIn("lora_dropout=0.5", lora.extra_repr())
 
     def test_extra_repr_no_dropout_by_default(self):
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3), rank=2)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3), rank=2)
         self.assertNotIn("lora_dropout", lora.extra_repr())
 
     def test_extended_forward_with_nonzero_rank(self):
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=4)
-        x = torch.randn(2, 3, 8, 8)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4)
+        x = _randn(2, 3, 8, 8)
         out = lora.extended_forward(x)
         self.assertEqual(out.shape, (2, 8, 8, 8))
 
     def test_forward_rank0_store_input(self):
         """rank=0 with store_input=True (after init_computation) uses lora path."""
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=0, lora_dropout=0.5)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=0, lora_dropout=0.5)
         lora.init_computation()
-        x = torch.randn(2, 3, 8, 8)
+        x = _randn(2, 3, 8, 8)
         out = lora(x)
         self.assertEqual(out.shape, (2, 8, 8, 8))
         lora.reset_computation()
@@ -741,22 +776,27 @@ class TestLoRADropoutConv2d(TestCase):
     def test_explicit_activation_skips_default(self):
         """Passing activation explicitly skips the `if activation is None` branch."""
         lora = GrowingLoRAConv2d(
-            nn.Conv2d(3, 8, 3, padding=1), rank=2, activation=nn.ReLU()
+            _conv2d(3, 8, 3, padding=1), rank=2, activation=nn.ReLU()
         )
-        x = torch.randn(2, 3, 8, 8)
+        x = _randn(2, 3, 8, 8)
         self.assertEqual(lora(x).shape, (2, 8, 8, 8))
 
     def test_extended_forward_rank_zero(self):
         """extended_forward with rank=0 and no growth returns early (line 348)."""
-        lora = GrowingLoRAConv2d(nn.Conv2d(3, 8, 3, padding=1), rank=0)
-        x = torch.randn(2, 3, 8, 8)
+        lora = GrowingLoRAConv2d(_conv2d(3, 8, 3, padding=1), rank=0)
+        x = _randn(2, 3, 8, 8)
         out = lora.extended_forward(x)
         self.assertEqual(out.shape, (2, 8, 8, 8))
 
     def test_wrap_conv2d_growing_module(self):
         """GrowingLoRAConv2d accepts a Conv2dGrowingModule (line 245)."""
         cgm = Conv2dGrowingModule(
-            in_channels=3, out_channels=8, kernel_size=3, padding=1, name="test_conv"
+            in_channels=3,
+            out_channels=8,
+            kernel_size=3,
+            padding=1,
+            name="test_conv",
+            device=global_device(),
         )
         lora = GrowingLoRAConv2d(cgm, rank=2)
         self.assertEqual(lora.in_channels, 3)
@@ -765,7 +805,12 @@ class TestLoRADropoutConv2d(TestCase):
     def test_merge_lora_conv2d_growing_module(self):
         """merge_lora on a Conv2dGrowingModule-backed LoRA (line 363)."""
         cgm = Conv2dGrowingModule(
-            in_channels=3, out_channels=8, kernel_size=3, padding=1, name="test_merge"
+            in_channels=3,
+            out_channels=8,
+            kernel_size=3,
+            padding=1,
+            name="test_merge",
+            device=global_device(),
         )
         lora = GrowingLoRAConv2d(cgm, rank=2, alpha=1.0)
         merged = lora.merge_lora()
@@ -774,7 +819,7 @@ class TestLoRADropoutConv2d(TestCase):
 
     def test_merge_lora_no_bias(self):
         """merge_lora on conv without bias (line 389->391 False branch)."""
-        conv = nn.Conv2d(3, 8, 3, padding=1, bias=False)
+        conv = _conv2d(3, 8, 3, padding=1, bias=False)
         lora = GrowingLoRAConv2d(conv, rank=2, alpha=1.0)
         merged = lora.merge_lora()
         self.assertIsNone(merged.bias)

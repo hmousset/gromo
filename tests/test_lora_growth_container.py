@@ -23,6 +23,19 @@ from gromo.containers.lora_growth_container import (
     merge_all_lora,
 )
 from gromo.modules.lora_growth_module import GrowingLoRAConv2d, GrowingLoRALinear
+from gromo.utils.utils import global_device
+
+
+def _linear(*args, **kwargs):
+    return nn.Linear(*args, device=global_device(), **kwargs)
+
+
+def _conv2d(*args, **kwargs):
+    return nn.Conv2d(*args, device=global_device(), **kwargs)
+
+
+def _randn(*args, **kwargs):
+    return torch.randn(*args, device=global_device(), **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +44,7 @@ from gromo.modules.lora_growth_module import GrowingLoRAConv2d, GrowingLoRALinea
 
 
 def _make_simple_model():
-    return nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+    return nn.Sequential(_linear(10, 20), nn.ReLU(), _linear(20, 5))
 
 
 def _grow(lora_model, data, added_rank=2):
@@ -67,23 +80,23 @@ def _grow(lora_model, data, added_rank=2):
 
 class TestMatchesTarget(TestCase):
     def test_matches_by_type(self):
-        self.assertTrue(_matches_target("fc", nn.Linear(10, 5), None, (nn.Linear,)))
+        self.assertTrue(_matches_target("fc", _linear(10, 5), None, (nn.Linear,)))
 
     def test_rejects_wrong_type(self):
-        self.assertFalse(_matches_target("fc", nn.Linear(10, 5), None, (nn.Conv2d,)))
+        self.assertFalse(_matches_target("fc", _linear(10, 5), None, (nn.Conv2d,)))
 
     def test_matches_by_name(self):
         self.assertTrue(
-            _matches_target("layer1.fc", nn.Linear(10, 5), ["fc"], (nn.Linear,))
+            _matches_target("layer1.fc", _linear(10, 5), ["fc"], (nn.Linear,))
         )
 
     def test_rejects_by_name(self):
         self.assertFalse(
-            _matches_target("layer1.conv", nn.Linear(10, 5), ["fc"], (nn.Linear,))
+            _matches_target("layer1.conv", _linear(10, 5), ["fc"], (nn.Linear,))
         )
 
     def test_none_target_modules_matches_all(self):
-        self.assertTrue(_matches_target("anything", nn.Linear(10, 5), None, (nn.Linear,)))
+        self.assertTrue(_matches_target("anything", _linear(10, 5), None, (nn.Linear,)))
 
 
 # ===================== get_growing_lora_model / LoRAGrowingModel Tests =====================
@@ -120,7 +133,7 @@ class TestAsLoraModel(TestCase):
                 self.assertEqual(m.alpha, 3.0)
 
     def test_target_modules_filtering(self):
-        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        model = nn.Sequential(_linear(10, 20), nn.ReLU(), _linear(20, 5))
         lora_model = get_growing_lora_model(model, target_modules=["0"])
         self.assertIsInstance(lora_model.model[0], GrowingLoRALinear)
         self.assertIsInstance(lora_model.model[2], nn.Linear)
@@ -142,14 +155,14 @@ class TestAsLoraModel(TestCase):
 
     def test_forward_after_apply(self):
         model = _make_simple_model()
-        x = torch.randn(3, 10)
+        x = _randn(3, 10)
         lora_model = get_growing_lora_model(model)
         out = lora_model(x)
         self.assertEqual(out.shape, (3, 5))
 
     def test_forward_equals_original_at_rank_zero(self):
         model = _make_simple_model()
-        x = torch.randn(3, 10)
+        x = _randn(3, 10)
         with torch.no_grad():
             expected = model(x).clone()
         lora_model = get_growing_lora_model(model)
@@ -181,9 +194,9 @@ class TestAsLoraModelNested(TestCase):
 
     def test_nested_modules(self):
         model = nn.Sequential(
-            nn.Sequential(nn.Linear(10, 20), nn.ReLU()),
-            nn.Sequential(nn.Linear(20, 15), nn.ReLU()),
-            nn.Linear(15, 5),
+            nn.Sequential(_linear(10, 20), nn.ReLU()),
+            nn.Sequential(_linear(20, 15), nn.ReLU()),
+            _linear(15, 5),
         )
         lora_model = get_growing_lora_model(model)
         lora_count = sum(
@@ -195,8 +208,8 @@ class TestAsLoraModelNested(TestCase):
         class SimpleNet(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.encoder = nn.Linear(10, 20)
-                self.decoder = nn.Linear(20, 10)
+                self.encoder = _linear(10, 20)
+                self.decoder = _linear(20, 10)
                 self.relu = nn.ReLU()
 
             def forward(self, x):
@@ -277,7 +290,7 @@ class TestMergeAllLora(TestCase):
     def test_merge_rank_zero_equals_original(self):
         """Merging rank-0 LoRA recovers the original weights exactly."""
         model = _make_simple_model()
-        x = torch.randn(3, 10)
+        x = _randn(3, 10)
         with torch.no_grad():
             out_orig = model(x).clone()
         lora_model = get_growing_lora_model(model)
@@ -316,7 +329,7 @@ class TestLoraStateDict(TestCase):
         lora_model = get_growing_lora_model(model)
 
         # Grow first so weights are non-trivial
-        data = [(torch.randn(4, 10), torch.randn(4, 5)) for _ in range(2)]
+        data = [(_randn(4, 10), _randn(4, 5)) for _ in range(2)]
         _grow(lora_model, data, added_rank=2)
 
         state = lora_model.lora_state_dict()
@@ -352,7 +365,7 @@ class TestEndToEnd(TestCase):
     def test_training_loop(self):
         model = _make_simple_model()
         lora_model = get_growing_lora_model(model)
-        x, y = torch.randn(16, 10), torch.randn(16, 5)
+        x, y = _randn(16, 10), _randn(16, 5)
         # Grow first so there are trainable parameters with a grad_fn
         _grow(lora_model, [(x, y)] * 2, added_rank=2)
         optimizer = torch.optim.Adam(lora_model.lora_parameters(), lr=0.01)
@@ -364,7 +377,7 @@ class TestEndToEnd(TestCase):
     def test_grow_during_training(self):
         model = _make_simple_model()
         lora_model = get_growing_lora_model(model)
-        x, y = torch.randn(8, 10), torch.randn(8, 5)
+        x, y = _randn(8, 10), _randn(8, 5)
 
         # First growth step
         _grow(lora_model, [(x, y)] * 2, added_rank=2)
@@ -392,13 +405,13 @@ class TestEndToEnd(TestCase):
         model = _make_simple_model()
         lora_model = get_growing_lora_model(model)
 
-        data = [(torch.randn(4, 10), torch.randn(4, 5)) for _ in range(2)]
+        data = [(_randn(4, 10), _randn(4, 5)) for _ in range(2)]
         _grow(lora_model, data, added_rank=3)
         # Set non-trivial B weights
         for m in lora_model.lora_modules():
             nn.init.normal_(m.second_layer.weight)
 
-        x = torch.randn(4, 10)
+        x = _randn(4, 10)
         with torch.no_grad():
             out_before = lora_model(x).clone()
         lora_model.merge_lora()
@@ -410,7 +423,7 @@ class TestEndToEnd(TestCase):
         )
 
     def test_parameter_count_efficiency(self):
-        model = nn.Sequential(nn.Linear(512, 512), nn.ReLU(), nn.Linear(512, 512))
+        model = nn.Sequential(_linear(512, 512), nn.ReLU(), _linear(512, 512))
         lora_model = get_growing_lora_model(model)
         # After growth the LoRA params will be small; at rank=0 they are 0
         # Just verify the standalone getter works
@@ -418,15 +431,15 @@ class TestEndToEnd(TestCase):
         self.assertIsInstance(params, list)
 
     def test_full_growth_pipeline(self):
-        model = nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, 4))
-        x = torch.randn(5, 8)
+        model = nn.Sequential(_linear(8, 16), nn.ReLU(), _linear(16, 4))
+        x = _randn(5, 8)
         lora_model = get_growing_lora_model(model, alpha=1.0)
 
-        data = [(torch.randn(8, 8), torch.randn(8, 4)) for _ in range(2)]
+        data = [(_randn(8, 8), _randn(8, 4)) for _ in range(2)]
         _grow(lora_model, data, added_rank=2)
 
         optimizer = torch.optim.SGD(lora_model.lora_parameters(), lr=0.01)
-        loss = nn.MSELoss()(lora_model(torch.randn(8, 8)), torch.randn(8, 4))
+        loss = nn.MSELoss()(lora_model(_randn(8, 8)), _randn(8, 4))
         loss.backward()
         optimizer.step()
 
@@ -442,7 +455,7 @@ class TestOriginalWeightsUnchanged(TestCase):
     def test_original_weights_unchanged_after_training(self):
         model = _make_simple_model()
         lora_model = get_growing_lora_model(model)
-        x, y = torch.randn(16, 10), torch.randn(16, 5)
+        x, y = _randn(16, 10), _randn(16, 5)
         # Grow first so that training actually uses LoRA parameters
         _grow(lora_model, [(x, y)] * 2, added_rank=2)
         optimizer = torch.optim.Adam(lora_model.lora_parameters(), lr=0.1)
@@ -462,7 +475,7 @@ class TestOriginalWeightsUnchanged(TestCase):
             for n, m in lora_model.named_modules()
             if isinstance(m, GrowingLoRALinear)
         }
-        data = [(torch.randn(2, 10), torch.randn(2, 5)) for _ in range(2)]
+        data = [(_randn(2, 10), _randn(2, 5)) for _ in range(2)]
         _grow(lora_model, data, added_rank=5)
         for n, m in lora_model.named_modules():
             if isinstance(m, GrowingLoRALinear):
@@ -478,7 +491,7 @@ class TestAsLoraModelConv2d(TestCase):
 
     def test_apply_on_conv_model(self):
         model = nn.Sequential(
-            nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(), nn.Conv2d(16, 32, 3, padding=1)
+            _conv2d(3, 16, 3, padding=1), nn.ReLU(), _conv2d(16, 32, 3, padding=1)
         )
         lora_model = get_growing_lora_model(model)
         lora_mods = lora_model.lora_modules()
@@ -488,20 +501,20 @@ class TestAsLoraModelConv2d(TestCase):
 
     def test_forward_after_apply_on_conv_model(self):
         model = nn.Sequential(
-            nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(), nn.Conv2d(16, 32, 3, padding=1)
+            _conv2d(3, 16, 3, padding=1), nn.ReLU(), _conv2d(16, 32, 3, padding=1)
         )
         lora_model = get_growing_lora_model(model)
-        out = lora_model(torch.randn(2, 3, 8, 8))
+        out = lora_model(_randn(2, 3, 8, 8))
         self.assertEqual(out.shape, (2, 32, 8, 8))
 
     def test_mixed_model_linear_and_conv(self):
         class MixedModel(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.conv = nn.Conv2d(3, 16, 3, padding=1)
+                self.conv = _conv2d(3, 16, 3, padding=1)
                 self.relu = nn.ReLU()
                 self.pool = nn.AdaptiveAvgPool2d(1)
-                self.fc = nn.Linear(16, 5)
+                self.fc = _linear(16, 5)
 
             def forward(self, x):
                 x = self.relu(self.conv(x))
@@ -514,14 +527,14 @@ class TestAsLoraModelConv2d(TestCase):
         types = {type(m) for m in lora_mods}
         self.assertIn(GrowingLoRALinear, types)
         self.assertIn(GrowingLoRAConv2d, types)
-        self.assertEqual(lora_model(torch.randn(2, 3, 8, 8)).shape, (2, 5))
+        self.assertEqual(lora_model(_randn(2, 3, 8, 8)).shape, (2, 5))
 
     def test_target_modules_filter(self):
         class NamedConvModel(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.conv1 = nn.Conv2d(3, 16, 3, padding=1)
-                self.conv2 = nn.Conv2d(16, 32, 3, padding=1)
+                self.conv1 = _conv2d(3, 16, 3, padding=1)
+                self.conv2 = _conv2d(16, 32, 3, padding=1)
 
             def forward(self, x):
                 return self.conv2(nn.functional.relu(self.conv1(x)))
@@ -541,31 +554,31 @@ class TestLoRADropoutContainer(TestCase):
         torch.manual_seed(0)
 
     def test_dropout_propagated_to_modules(self):
-        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        model = nn.Sequential(_linear(10, 20), nn.ReLU(), _linear(20, 5))
         lora_model = get_growing_lora_model(model, lora_dropout=0.4)
         for m in lora_model.lora_modules():
             self.assertAlmostEqual(m.lora_dropout.p, 0.4)
 
     def test_extra_repr_shows_dropout(self):
-        model = nn.Sequential(nn.Linear(10, 5))
+        model = nn.Sequential(_linear(10, 5))
         lora_model = get_growing_lora_model(model, lora_dropout=0.3)
         self.assertIn("lora_dropout=0.3", lora_model.extra_repr())
 
     def test_extra_repr_no_dropout_by_default(self):
-        model = nn.Sequential(nn.Linear(10, 5))
+        model = nn.Sequential(_linear(10, 5))
         lora_model = get_growing_lora_model(model)
         self.assertNotIn("lora_dropout", lora_model.extra_repr())
 
     def test_explicit_in_features_only(self):
         """Pass in_features but let out_features be inferred."""
-        model = nn.Sequential(nn.Linear(10, 5))
+        model = nn.Sequential(_linear(10, 5))
         lora_model = get_growing_lora_model(model, in_features=10)
         self.assertEqual(lora_model.in_features, 10)
         self.assertEqual(lora_model.out_features, 5)
 
     def test_explicit_out_features_only(self):
         """Pass out_features but let in_features be inferred."""
-        model = nn.Sequential(nn.Linear(10, 5))
+        model = nn.Sequential(_linear(10, 5))
         lora_model = get_growing_lora_model(model, out_features=5)
         self.assertEqual(lora_model.in_features, 10)
         self.assertEqual(lora_model.out_features, 5)
@@ -579,15 +592,15 @@ class TestLoadLoRAStateDictCoverage(TestCase):
 
     def test_load_same_rank_no_expansion(self):
         """Loading a state with same rank should copy weights without expanding."""
-        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        model = nn.Sequential(_linear(10, 20), nn.ReLU(), _linear(20, 5))
         lora_model = get_growing_lora_model(model)
         # Grow to rank 2
-        data = [(torch.randn(4, 10), torch.randn(4, 5)) for _ in range(2)]
+        data = [(_randn(4, 10), _randn(4, 5)) for _ in range(2)]
         _grow(lora_model, data, added_rank=2)
         state = lora_model.lora_state_dict()
 
         # Reload into fresh model already at rank 2 — no expansion should happen
-        model2 = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        model2 = nn.Sequential(_linear(10, 20), nn.ReLU(), _linear(20, 5))
         lora_model2 = get_growing_lora_model(model2)
         _grow(lora_model2, data, added_rank=2)
         lora_model2.load_lora_state_dict(state)
@@ -599,7 +612,7 @@ class TestLoadLoRAStateDictCoverage(TestCase):
 
     def test_load_missing_key_is_skipped(self):
         """load_lora_state_dict silently skips modules whose key is absent."""
-        model = nn.Sequential(nn.Linear(10, 20), nn.ReLU(), nn.Linear(20, 5))
+        model = nn.Sequential(_linear(10, 20), nn.ReLU(), _linear(20, 5))
         lora_model = get_growing_lora_model(model)
         # Empty state — nothing should be loaded, no error
         lora_model.load_lora_state_dict({})
@@ -608,7 +621,7 @@ class TestLoadLoRAStateDictCoverage(TestCase):
 
     def test_merge_all_lora_top_level_module(self):
         """merge_all_lora works when a LoRA wrapper is at the top level (no dot in name)."""
-        linear = nn.Linear(4, 8)
+        linear = _linear(4, 8)
 
         class TopLevel(nn.Module):
             def __init__(self):
@@ -630,14 +643,14 @@ class TestLoadLoRAStateDictCoverage(TestCase):
         class NestedModel(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.block = nn.Sequential(nn.Linear(4, 8))
+                self.block = nn.Sequential(_linear(4, 8))
 
             def forward(self, x):
                 return self.block(x)
 
         model = NestedModel()
         lora_model = get_growing_lora_model(model)
-        x = torch.randn(2, 4)
+        x = _randn(2, 4)
         _ = lora_model(x)
         lora_model.merge_lora()
         self.assertEqual(lora_model(x).shape, (2, 8))

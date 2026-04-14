@@ -69,6 +69,8 @@ class GrowingLoRALinear(LinearGrowingBlock):
     ):
         linear.requires_grad_(False)
         self.alpha = alpha
+        if device is None:
+            device = linear.weight.device
 
         if activation is None:
             activation = nn.Identity()
@@ -245,6 +247,8 @@ class GrowingLoRAConv2d(Conv2dGrowingBlock):
             underlying = conv.layer
         else:
             underlying = conv
+        if device is None:
+            device = underlying.weight.device
         self.in_channels = underlying.in_channels
         self.out_channels = underlying.out_channels
         self.alpha = alpha
