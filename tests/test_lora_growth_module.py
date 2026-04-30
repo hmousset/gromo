@@ -22,7 +22,7 @@ from gromo.containers.lora_growth_container import (
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.modules.lora_growth_module import GrowingLoRAConv2d, GrowingLoRALinear
-from gromo.utils.utils import global_device
+from gromo.utils.utils import global_device, set_device
 
 
 def _linear(*args, **kwargs):
@@ -110,6 +110,19 @@ class TestGrowingLoRALinearInit(TestCase):
         self.assertIn("out_features=20", r)
         self.assertIn("rank=4", r)
         self.assertIn("alpha=2.0", r)
+
+    def test_explicit_device_overrides_global_device_for_internal_layers(self):
+        original_device = global_device()
+        try:
+            set_device(torch.device("meta"))
+            linear = nn.Linear(10, 20, device=torch.device("cpu"))
+            lora = GrowingLoRALinear(linear, rank=0, device=torch.device("cpu"))
+        finally:
+            set_device(original_device)
+
+        self.assertEqual(lora.device, torch.device("cpu"))
+        self.assertEqual(lora.first_layer.weight.device, torch.device("cpu"))
+        self.assertEqual(lora.second_layer.weight.device, torch.device("cpu"))
 
 
 class TestGrowingLoRALinearForward(TestCase):

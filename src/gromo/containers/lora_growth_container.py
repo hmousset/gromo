@@ -254,9 +254,9 @@ class LoRAGrowingModel(SequentialGrowingModel):
     # nn.Module interface
     # ------------------------------------------------------------------
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, *args, **kwargs):
         """Forward pass delegating to the wrapped model."""
-        return self.model(x)
+        return self.model(*args, **kwargs)
 
     def extended_forward(  # type: ignore[override]
         self, x: torch.Tensor, mask: dict | None = None
