@@ -423,7 +423,13 @@ def compute_statistics(
         metrics.reset()
         metrics = metrics.to(device)
 
-    model.init_computation()
+    # When the model is wrapped in DDP by accelerator.prepare(), the custom
+    # GrowingContainer methods are on the inner module, not the wrapper.
+    raw_model: GrowingContainer = (
+        accelerator.unwrap_model(model) if accelerator is not None else model
+    )
+
+    raw_model.init_computation()
     model.eval()
     for _, (x, y) in enumerate_dataloader(
         dataloader, dataloader_seed=dataloader_seed, batch_limit=batch_limit
@@ -437,12 +443,12 @@ def compute_statistics(
                 accelerator.backward(loss)
         else:
             loss.backward()
-        model.update_computation()
+        raw_model.update_computation()
         loss_meter.update(loss.detach() / x.size(0), x.size(0))
         metrics.update(y_pred.detach(), y)
 
     if accelerator is not None:
-        model.sync_computation(accelerator)
+        raw_model.sync_computation(accelerator)
         if loss_meter.sum is not None:
             loss_meter.sum = accelerator.reduce(loss_meter.sum, reduction="sum")
         count = torch.tensor(loss_meter.count, dtype=torch.float32, device=device)
