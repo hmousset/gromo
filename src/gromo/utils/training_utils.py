@@ -1,5 +1,6 @@
-from collections.abc import Callable, Generator
-from typing import Any, Literal
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import torch.utils.data
@@ -8,6 +9,12 @@ from torchmetrics import Metric, classification
 
 from gromo.containers.growing_container import GrowingContainer, GrowingModel
 from gromo.utils.utils import global_device
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+
+    from accelerate import Accelerator
 
 
 class AverageMeter(object):
@@ -157,6 +164,7 @@ def evaluate_model(
     dataloader_seed: int | None = None,
     mask: dict | None = None,
     device: torch.device = torch.device("cpu"),
+    accelerator: "Accelerator | None" = None,
 ) -> tuple[float, float]:
     """
     Evaluate the model on a dataloader.
@@ -184,7 +192,13 @@ def evaluate_model(
         The mask to use for the extended model. Only used if `use_extended_model` is True.
         Default is None.
     device : torch.device, optional
-        Device to use. Default is torch.device("cpu").
+        Device to use. Default is torch.device("cpu"). Ignored when `accelerator` is
+        provided (``accelerator.device`` is used instead).
+    accelerator : Accelerator | None, optional
+        An :class:`~accelerate.Accelerator` instance for multi-GPU evaluation.
+        When provided, loss values are reduced across all processes before
+        returning. The dataloader should already be prepared via
+        ``accelerator.prepare()``. Default is None.
 
     Returns
     -------
@@ -200,6 +214,9 @@ def evaluate_model(
     assert (
         not isinstance(loss_function, nn.Module) or loss_function.reduction == "mean"
     ), "The loss function should be averaged over the batch"
+
+    if accelerator is not None:
+        device = accelerator.device
 
     # metrics meters
     loss_meter = AverageMeter()
@@ -232,6 +249,12 @@ def evaluate_model(
         loss_meter.update(loss, x.size(0))
         metrics.update(y_pred, y)
 
+    if accelerator is not None:
+        if loss_meter.sum is not None:
+            loss_meter.sum = accelerator.reduce(loss_meter.sum, reduction="sum")
+        count = torch.tensor(loss_meter.count, dtype=torch.float32, device=device)
+        loss_meter.count = int(accelerator.reduce(count, reduction="sum").item())
+
     return loss_meter.compute().item(), metrics.compute().item()
 
 
@@ -246,6 +269,7 @@ def gradient_descent(
     dataloader_seed: int | None = None,
     device: torch.device = torch.device("cpu"),
     scheduler_step_granularity: Literal["epoch", "batch"] = "epoch",
+    accelerator: "Accelerator | None" = None,
 ) -> tuple[float, float]:
     """
     Train the model on the train_dataloader using classic gradient descent.
@@ -272,9 +296,15 @@ def gradient_descent(
         one). This can be used to ensure reproducibility when shuffling is involved.
         Default is None.
     device : torch.device, optional
-        Device to use. Default is torch.device("cpu").
+        Device to use. Default is torch.device("cpu"). Ignored when `accelerator` is
+        provided (``accelerator.device`` is used instead).
     scheduler_step_granularity : Literal["epoch", "batch"], optional
         Whether to step the scheduler after each epoch (`"epoch"`, default) or each mini-batch (`"batch"`).
+    accelerator : Accelerator | None, optional
+        An :class:`~accelerate.Accelerator` instance for multi-GPU training.
+        When provided, ``accelerator.backward(loss)`` is used instead of
+        ``loss.backward()``. The model, optimizer and dataloader should
+        already be prepared via ``accelerator.prepare()``. Default is None.
 
     Returns
     -------
@@ -284,6 +314,9 @@ def gradient_descent(
     assert (
         not isinstance(loss_function, nn.Module) or loss_function.reduction == "mean"
     ), "The loss function should be averaged over the batch"
+
+    if accelerator is not None:
+        device = accelerator.device
 
     # metrics meters
     loss_meter = AverageMeter()
@@ -308,7 +341,10 @@ def gradient_descent(
             f"During training of {model}, loss is NaN: {loss}, sample index: {i / len(train_dataloader)}"
         )
 
-        loss.backward()
+        if accelerator is not None:
+            accelerator.backward(loss)
+        else:
+            loss.backward()
         optimizer.step()
 
         # update metrics
@@ -332,6 +368,7 @@ def compute_statistics(
     batch_limit: int | None = None,
     dataloader_seed: int | None = None,
     device: torch.device = torch.device("cpu"),
+    accelerator: "Accelerator | None" = None,
 ) -> tuple[float, float]:
     """
     Compute the tensor of statistics of the model on the dataloader
@@ -355,7 +392,17 @@ def compute_statistics(
         one). This can be used to ensure reproducibility when shuffling is involved.
         Default is None.
     device : torch.device, optional
-        The device to use. Default is torch.device("cpu").
+        The device to use. Default is torch.device("cpu"). Ignored when
+        `accelerator` is provided (``accelerator.device`` is used instead).
+    accelerator : Accelerator | None, optional
+        An :class:`~accelerate.Accelerator` instance for multi-GPU statistics
+        computation.  When provided, each backward pass is wrapped with
+        ``accelerator.no_sync(model)`` so that DDP does *not* all-reduce
+        gradients between batches — each rank accumulates local statistics
+        independently.  After the loop, ``model.sync_computation(accelerator)``
+        all-reduces the accumulated tensors across ranks and the loss meter is
+        reduced too.  The dataloader should already be prepared via
+        ``accelerator.prepare()``. Default is None.
 
     Returns
     -------
@@ -365,6 +412,10 @@ def compute_statistics(
     assert not isinstance(loss_function, nn.Module) or loss_function.reduction == "sum", (
         "The loss function should not be averaged over the batch"
     )
+
+    if accelerator is not None:
+        device = accelerator.device
+
     loss_meter = AverageMeter()
     if metrics is None:
         metrics = DummyMetric()
@@ -381,10 +432,21 @@ def compute_statistics(
         x, y = x.to(device), y.to(device)
         y_pred = model(x)
         loss = loss_function(y_pred, y)
-        loss.backward()
+        if accelerator is not None:
+            with accelerator.no_sync(model):
+                accelerator.backward(loss)
+        else:
+            loss.backward()
         model.update_computation()
         loss_meter.update(loss.detach() / x.size(0), x.size(0))
         metrics.update(y_pred.detach(), y)
+
+    if accelerator is not None:
+        model.sync_computation(accelerator)
+        if loss_meter.sum is not None:
+            loss_meter.sum = accelerator.reduce(loss_meter.sum, reduction="sum")
+        count = torch.tensor(loss_meter.count, dtype=torch.float32, device=device)
+        loss_meter.count = int(accelerator.reduce(count, reduction="sum").item())
 
     return loss_meter.compute().item(), metrics.compute().item()
 

@@ -1,8 +1,22 @@
+from __future__ import annotations
+
 import warnings
-from typing import Any, Iterator, Literal, Protocol, get_args, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Iterator,
+    Literal,
+    Protocol,
+    get_args,
+    runtime_checkable,
+)
 
 import numpy as np
 import torch
+
+
+if TYPE_CHECKING:
+    from accelerate import Accelerator
 
 from gromo.config.loader import load_config
 from gromo.utils.tensor_statistic import TensorStatistic
@@ -389,6 +403,24 @@ class MergeGrowingModule(torch.nn.Module):
             self.previous_tensor_s.reset()
         if self.previous_tensor_m is not None:
             self.previous_tensor_m.reset()
+
+    def sync_computation(self, accelerator: "Accelerator") -> None:
+        """All-reduce accumulated statistics across distributed processes.
+
+        Must be called after the statistics loop that used ``no_sync()`` to
+        aggregate each process's local sums into globally-correct tensors.
+
+        Parameters
+        ----------
+        accelerator : Accelerator
+            The Accelerate :class:`~accelerate.Accelerator` managing the
+            distributed environment.
+        """
+        self.tensor_s.sync(accelerator)
+        if self.previous_tensor_s is not None:
+            self.previous_tensor_s.sync(accelerator)
+        if self.previous_tensor_m is not None:
+            self.previous_tensor_m.sync(accelerator)
 
     def delete_update(self, include_previous: bool = False) -> None:
         """
@@ -2612,6 +2644,38 @@ class GrowingModule(torch.nn.Module):
             self.tensor_s_growth.reset()
         elif isinstance(self.previous_module, MergeGrowingModule):
             self.previous_module.reset_computation()
+        else:
+            raise NotImplementedError
+
+    def sync_computation(self, accelerator: "Accelerator") -> None:
+        """All-reduce accumulated statistics across distributed processes.
+
+        Must be called after the statistics loop that used ``no_sync()`` to
+        aggregate each process's local sums into globally-correct tensors.
+
+        ``tensor_s_growth`` (an alias for ``previous_module.tensor_s``) is
+        intentionally *not* synced here: when iterating all growing layers via
+        :meth:`~gromo.containers.growing_container.GrowingContainer.sync_computation`,
+        the previous module's ``tensor_s`` is already synced by that module's
+        own call.
+
+        Parameters
+        ----------
+        accelerator : Accelerator
+            The Accelerate :class:`~accelerate.Accelerator` managing the
+            distributed environment.
+        """
+        self.tensor_s.sync(accelerator)
+        self.tensor_m.sync(accelerator)
+        self.covariance_loss_gradient.sync(accelerator)
+        if self.previous_module is None:
+            return
+        elif isinstance(self.previous_module, GrowingModule):
+            self.tensor_m_prev.sync(accelerator)
+            self.cross_covariance.sync(accelerator)
+            # tensor_s_growth == previous_module.tensor_s; synced by that layer
+        elif isinstance(self.previous_module, MergeGrowingModule):
+            self.previous_module.sync_computation(accelerator)
         else:
             raise NotImplementedError
 

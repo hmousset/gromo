@@ -1,10 +1,16 @@
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from gromo.config.loader import load_config
 from gromo.modules.growing_module import GrowingModule, MergeGrowingModule
 from gromo.utils.utils import get_correct_device
+
+
+if TYPE_CHECKING:
+    from accelerate import Accelerator
 
 
 class GrowingContainer(torch.nn.Module):
@@ -94,6 +100,22 @@ class GrowingContainer(torch.nn.Module):
         """Reset statistics computations for growth procedure"""
         for layer in self._growing_layers:
             layer.reset_computation()
+
+    def sync_computation(self, accelerator: "Accelerator") -> None:
+        """All-reduce accumulated statistics across distributed processes.
+
+        Call after a ``compute_statistics`` loop that used ``no_sync()`` so
+        that each rank's locally-accumulated sums are reduced to the global
+        sums before the growing step.
+
+        Parameters
+        ----------
+        accelerator : Accelerator
+            The Accelerate :class:`~accelerate.Accelerator` managing the
+            distributed environment.
+        """
+        for layer in self._growing_layers:
+            layer.sync_computation(accelerator)
 
     def compute_optimal_delta(
         self,

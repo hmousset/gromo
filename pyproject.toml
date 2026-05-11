@@ -30,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["coverage"]
 dev = ["ruff", "pre-commit", "pydoclint"]
+accelerate = ["accelerate"]
 doc = [
     "pre-commit",
     "ruff",

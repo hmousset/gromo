@@ -1,9 +1,15 @@
-from typing import Any, Callable
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import torch
 
 from gromo.utils.utils import global_device
+
+
+if TYPE_CHECKING:
+    from accelerate import Accelerator
 
 
 class TensorStatistic:
@@ -99,6 +105,24 @@ class TensorStatistic:
             self.samples += nb_sample
             self.updated = True
             return update, nb_sample
+
+    def sync(self, accelerator: "Accelerator") -> None:
+        """All-reduce accumulated statistics across distributed processes.
+
+        Call this after a loop that used ``accelerator.no_sync()`` so that each
+        process's locally-accumulated sum and sample count are summed across all
+        ranks, yielding the globally-correct statistic.
+
+        Parameters
+        ----------
+        accelerator : Accelerator
+            The Accelerate :class:`~accelerate.Accelerator` managing the
+            distributed environment.
+        """
+        if self._tensor is not None:
+            self._tensor = accelerator.reduce(self._tensor, reduction="sum")
+        count = torch.tensor(self.samples, dtype=torch.float32, device=accelerator.device)
+        self.samples = int(accelerator.reduce(count, reduction="sum").item())
 
     def init(self):
         """Reset the tensor"""

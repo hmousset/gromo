@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 import torch.utils.data
 from torch import nn
@@ -12,6 +14,32 @@ from gromo.utils.training_utils import (
     gradient_descent,
 )
 from tests.torch_unittest import TorchTestCase
+
+
+class _FakeAccelerator:
+    """Single-process Accelerator stub for unit-testing the accelerator paths."""
+
+    def __init__(self):
+        self.device = torch.device("cpu")
+        self.backward_calls = 0
+        self.no_sync_calls = 0
+        self.reduce_calls: list[tuple[torch.Tensor, str]] = []
+
+    def backward(self, loss: torch.Tensor) -> None:
+        """Delegate to loss.backward() and record the call."""
+        self.backward_calls += 1
+        loss.backward()
+
+    def reduce(self, tensor: torch.Tensor, reduction: str = "sum") -> torch.Tensor:
+        """Identity reduction (single process) — records the call."""
+        self.reduce_calls.append((tensor.clone(), reduction))
+        return tensor
+
+    @contextmanager
+    def no_sync(self, model):
+        """No-op context manager that records usage."""
+        self.no_sync_calls += 1
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +426,173 @@ class TestComputeStatistics(TorchTestCase):
         )
         self.assertIsInstance(loss, float)
         self.assertIsInstance(metric_val, float)
+
+
+# ---------------------------------------------------------------------------
+# Accelerator-path tests
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateModelWithAccelerator(TorchTestCase):
+    """evaluate_model behaves correctly when an Accelerator stub is supplied."""
+
+    @staticmethod
+    def _make_dataloader(
+        n_samples: int = 8, batch_size: int = 4
+    ) -> torch.utils.data.DataLoader:
+        x = torch.randn(n_samples, 4)
+        y = torch.randn(n_samples, 2)
+        return torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(x, y), batch_size=batch_size
+        )
+
+    def test_device_is_derived_from_accelerator(self):
+        """accelerator.device overrides the `device` argument."""
+        model = _SimpleModel(4, 2)
+        acc = _FakeAccelerator()
+        acc.device = torch.device("cpu")
+        loss, _ = evaluate_model(
+            model,
+            self._make_dataloader(),
+            nn.MSELoss(reduction="mean"),
+            device=torch.device("cpu"),
+            accelerator=acc,
+        )
+        self.assertIsInstance(loss, float)
+
+    def test_reduce_called_for_loss_meter(self):
+        """accelerator.reduce is called to aggregate the loss across processes."""
+        model = _SimpleModel(4, 2)
+        acc = _FakeAccelerator()
+        evaluate_model(
+            model,
+            self._make_dataloader(),
+            nn.MSELoss(reduction="mean"),
+            accelerator=acc,
+        )
+        # Two reduce calls: one for loss_meter.sum, one for loss_meter.count
+        self.assertEqual(len(acc.reduce_calls), 2)
+        self.assertTrue(all(r == "sum" for _, r in acc.reduce_calls))
+
+    def test_result_matches_no_accelerator(self):
+        """Single-process accelerator gives the same result as no accelerator."""
+        torch.manual_seed(0)
+        model = _SimpleModel(4, 2)
+        dl = self._make_dataloader()
+        loss_ref, _ = evaluate_model(model, dl, nn.MSELoss(reduction="mean"))
+        loss_acc, _ = evaluate_model(
+            model, dl, nn.MSELoss(reduction="mean"), accelerator=_FakeAccelerator()
+        )
+        self.assertAlmostEqual(loss_ref, loss_acc, places=5)
+
+
+class TestGradientDescentWithAccelerator(TorchTestCase):
+    """gradient_descent behaves correctly when an Accelerator stub is supplied."""
+
+    @staticmethod
+    def _make_dataloader(
+        n_samples: int = 8, batch_size: int = 4
+    ) -> torch.utils.data.DataLoader:
+        x = torch.randn(n_samples, 4)
+        y = torch.randn(n_samples, 2)
+        return torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(x, y), batch_size=batch_size
+        )
+
+    def test_backward_delegated_to_accelerator(self):
+        """accelerator.backward() is called instead of loss.backward()."""
+        model = _SimpleModel(4, 2)
+        acc = _FakeAccelerator()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        dl = self._make_dataloader(n_samples=8, batch_size=4)  # 2 batches
+
+        gradient_descent(
+            model,
+            dl,
+            optimizer,
+            scheduler=None,
+            loss_function=nn.MSELoss(reduction="mean"),
+            accelerator=acc,
+        )
+
+        self.assertEqual(acc.backward_calls, 2)
+
+    def test_result_matches_no_accelerator(self):
+        """Single-process accelerator gives the same loss as no accelerator."""
+        torch.manual_seed(0)
+        model_ref = _SimpleModel(4, 2)
+        torch.manual_seed(0)
+        model_acc = _SimpleModel(4, 2)
+
+        dl = self._make_dataloader()
+        opt_ref = torch.optim.SGD(model_ref.parameters(), lr=0.01)
+        opt_acc = torch.optim.SGD(model_acc.parameters(), lr=0.01)
+        loss_fn = nn.MSELoss(reduction="mean")
+
+        loss_ref, _ = gradient_descent(model_ref, dl, opt_ref, None, loss_fn)
+        loss_acc, _ = gradient_descent(
+            model_acc, dl, opt_acc, None, loss_fn, accelerator=_FakeAccelerator()
+        )
+        self.assertAlmostEqual(loss_ref, loss_acc, places=5)
+
+
+class TestComputeStatisticsWithAccelerator(TorchTestCase):
+    """compute_statistics behaves correctly when an Accelerator stub is supplied."""
+
+    @staticmethod
+    def _make_dataloader(
+        n_samples: int = 8, batch_size: int = 4
+    ) -> torch.utils.data.DataLoader:
+        x = torch.randn(n_samples, 4)
+        y = torch.randn(n_samples, 2)
+        return torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(x, y), batch_size=batch_size
+        )
+
+    def test_no_sync_called_each_batch(self):
+        """accelerator.no_sync() is entered once per batch."""
+        model = _SimpleGrowingContainer(4, 2)
+        acc = _FakeAccelerator()
+        dl = self._make_dataloader(n_samples=8, batch_size=4)  # 2 batches
+
+        compute_statistics(model, dl, nn.MSELoss(reduction="sum"), accelerator=acc)
+
+        self.assertEqual(acc.no_sync_calls, 2)
+
+    def test_backward_delegated_to_accelerator(self):
+        """accelerator.backward() is called instead of loss.backward()."""
+        model = _SimpleGrowingContainer(4, 2)
+        acc = _FakeAccelerator()
+        dl = self._make_dataloader(n_samples=8, batch_size=4)
+
+        compute_statistics(model, dl, nn.MSELoss(reduction="sum"), accelerator=acc)
+
+        self.assertEqual(acc.backward_calls, 2)
+
+    def test_reduce_called_for_loss_meter(self):
+        """accelerator.reduce is called to aggregate the loss meter after the loop."""
+        model = _SimpleGrowingContainer(4, 2)
+        acc = _FakeAccelerator()
+
+        compute_statistics(
+            model, self._make_dataloader(), nn.MSELoss(reduction="sum"), accelerator=acc
+        )
+
+        # At minimum two calls from the loss meter (sum + count)
+        reduce_args = [r for _, r in acc.reduce_calls]
+        self.assertGreaterEqual(reduce_args.count("sum"), 2)
+
+    def test_result_matches_no_accelerator(self):
+        """Single-process accelerator gives the same loss as no accelerator."""
+        torch.manual_seed(0)
+        model = _SimpleGrowingContainer(4, 2)
+        dl = self._make_dataloader()
+        loss_ref, _ = compute_statistics(model, dl, nn.MSELoss(reduction="sum"))
+
+        torch.manual_seed(0)
+        model2 = _SimpleGrowingContainer(4, 2)
+        loss_acc, _ = compute_statistics(
+            model2, dl, nn.MSELoss(reduction="sum"), accelerator=_FakeAccelerator()
+        )
+
+        self.assertAlmostEqual(loss_ref, loss_acc, places=5)
