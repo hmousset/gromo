@@ -4,17 +4,48 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import torch.utils.data
+from accelerate import Accelerator
 from torch import nn
 from torchmetrics import Metric, classification
 
 from gromo.containers.growing_container import GrowingContainer, GrowingModel
-from gromo.utils.utils import global_device
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
 
-    from accelerate import Accelerator
+
+# ---------------------------------------------------------------------------
+# Internal helpers for transparent accelerate support
+# ---------------------------------------------------------------------------
+
+
+def _get_accelerator(model: Any) -> Accelerator | None:
+    """Return the :class:`~accelerate.Accelerator` stored on a prepared model, if any."""
+    if isinstance(model, GrowingContainer):
+        return model.__dict__.get("_accelerator")
+    return None
+
+
+def _get_raw_model(model: Any) -> GrowingContainer:
+    """Return the :class:`~gromo.containers.GrowingContainer` itself.
+
+    With :func:`gromo.prepare` the model is always the user-facing object, so
+    no unwrapping is needed.
+    """
+    return model  # type: ignore[return-value]
+
+
+def _get_prepared_model(model: Any) -> Any:
+    """Return the DDP-wrapped model stored by :func:`gromo.prepare`, if any.
+
+    Used to pass the DDP object to ``accelerator.no_sync()``, which requires
+    the wrapper rather than the inner :class:`~gromo.containers.GrowingContainer`.
+    """
+    if isinstance(model, GrowingContainer):
+        ddp = model.__dict__.get("_ddp")
+        return ddp if ddp is not None else model
+    return model
 
 
 class AverageMeter(object):
@@ -163,8 +194,8 @@ def evaluate_model(
     batch_limit: int | None = None,
     dataloader_seed: int | None = None,
     mask: dict | None = None,
-    device: torch.device = torch.device("cpu"),
-    accelerator: "Accelerator | None" = None,
+    device: torch.device | None = None,
+    accelerator: Accelerator | None = None,
 ) -> tuple[float, float]:
     """
     Evaluate the model on a dataloader.
@@ -191,14 +222,15 @@ def evaluate_model(
     mask : dict | None, optional
         The mask to use for the extended model. Only used if `use_extended_model` is True.
         Default is None.
-    device : torch.device, optional
-        Device to use. Default is torch.device("cpu"). Ignored when `accelerator` is
-        provided (``accelerator.device`` is used instead).
+    device : torch.device | None, optional
+        Device to use.  Ignored when ``accelerator`` is provided.  When neither
+        is given, an :class:`~accelerate.Accelerator` is created automatically.
+        Default is None.
     accelerator : Accelerator | None, optional
-        An :class:`~accelerate.Accelerator` instance for multi-GPU evaluation.
-        When provided, loss values are reduced across all processes before
-        returning. The dataloader should already be prepared via
-        ``accelerator.prepare()``. Default is None.
+        Accelerator instance for multi-GPU evaluation.  When provided, loss
+        values are reduced across all processes before returning.  Detected
+        automatically when the model was prepared with :func:`gromo.prepare`.
+        Default is None.
 
     Returns
     -------
@@ -215,6 +247,12 @@ def evaluate_model(
         not isinstance(loss_function, nn.Module) or loss_function.reduction == "mean"
     ), "The loss function should be averaged over the batch"
 
+    # An explicit device= is interpreted as single-process mode; skip
+    # auto-detection to avoid triggering collective operations on one rank only.
+    if accelerator is None and device is None:
+        accelerator = _get_accelerator(model)
+    if accelerator is None and device is None:
+        accelerator = Accelerator()
     if accelerator is not None:
         device = accelerator.device
 
@@ -267,9 +305,9 @@ def gradient_descent(
     metrics: Metric | None = None,
     batch_limit: int | None = None,
     dataloader_seed: int | None = None,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device | None = None,
     scheduler_step_granularity: Literal["epoch", "batch"] = "epoch",
-    accelerator: "Accelerator | None" = None,
+    accelerator: Accelerator | None = None,
 ) -> tuple[float, float]:
     """
     Train the model on the train_dataloader using classic gradient descent.
@@ -295,16 +333,17 @@ def gradient_descent(
         An optional seed to set for the dataloader's random number generator (if it has
         one). This can be used to ensure reproducibility when shuffling is involved.
         Default is None.
-    device : torch.device, optional
-        Device to use. Default is torch.device("cpu"). Ignored when `accelerator` is
-        provided (``accelerator.device`` is used instead).
+    device : torch.device | None, optional
+        Device to use.  Ignored when ``accelerator`` is provided.  When neither
+        is given, an :class:`~accelerate.Accelerator` is created automatically.
+        Default is None.
     scheduler_step_granularity : Literal["epoch", "batch"], optional
-        Whether to step the scheduler after each epoch (`"epoch"`, default) or each mini-batch (`"batch"`).
+        Whether to step the scheduler after each epoch (``"epoch"``, default) or each mini-batch (``"batch"``).
     accelerator : Accelerator | None, optional
-        An :class:`~accelerate.Accelerator` instance for multi-GPU training.
-        When provided, ``accelerator.backward(loss)`` is used instead of
-        ``loss.backward()``. The model, optimizer and dataloader should
-        already be prepared via ``accelerator.prepare()``. Default is None.
+        Accelerator instance for multi-GPU training.  When provided,
+        ``accelerator.backward(loss)`` is used in place of ``loss.backward()``.
+        Detected automatically when the model was prepared with
+        :func:`gromo.prepare`. Default is None.
 
     Returns
     -------
@@ -315,6 +354,12 @@ def gradient_descent(
         not isinstance(loss_function, nn.Module) or loss_function.reduction == "mean"
     ), "The loss function should be averaged over the batch"
 
+    # An explicit device= is interpreted as single-process mode; skip
+    # auto-detection to avoid triggering collective operations on one rank only.
+    if accelerator is None and device is None:
+        accelerator = _get_accelerator(model)
+    if accelerator is None and device is None:
+        accelerator = Accelerator()
     if accelerator is not None:
         device = accelerator.device
 
@@ -344,7 +389,7 @@ def gradient_descent(
         if accelerator is not None:
             accelerator.backward(loss)
         else:
-            loss.backward()
+            loss.backward()  # accelerator=None only when device= was passed explicitly
         optimizer.step()
 
         # update metrics
@@ -367,8 +412,8 @@ def compute_statistics(
     metrics: Metric | None = None,
     batch_limit: int | None = None,
     dataloader_seed: int | None = None,
-    device: torch.device = torch.device("cpu"),
-    accelerator: "Accelerator | None" = None,
+    device: torch.device | None = None,
+    accelerator: Accelerator | None = None,
 ) -> tuple[float, float]:
     """
     Compute the tensor of statistics of the model on the dataloader
@@ -391,18 +436,17 @@ def compute_statistics(
         An optional seed to set for the dataloader's random number generator (if it has
         one). This can be used to ensure reproducibility when shuffling is involved.
         Default is None.
-    device : torch.device, optional
-        The device to use. Default is torch.device("cpu"). Ignored when
-        `accelerator` is provided (``accelerator.device`` is used instead).
+    device : torch.device | None, optional
+        Device to use.  Ignored when ``accelerator`` is provided.  When neither
+        is given, an :class:`~accelerate.Accelerator` is created automatically.
+        Default is None.
     accelerator : Accelerator | None, optional
-        An :class:`~accelerate.Accelerator` instance for multi-GPU statistics
-        computation.  When provided, each backward pass is wrapped with
-        ``accelerator.no_sync(model)`` so that DDP does *not* all-reduce
-        gradients between batches — each rank accumulates local statistics
-        independently.  After the loop, ``model.sync_computation(accelerator)``
-        all-reduces the accumulated tensors across ranks and the loss meter is
-        reduced too.  The dataloader should already be prepared via
-        ``accelerator.prepare()``. Default is None.
+        Accelerator instance for multi-GPU statistics computation.  When
+        provided, each backward pass is wrapped with ``no_sync()`` so that DDP
+        does not all-reduce gradients between batches — each rank accumulates
+        local statistics independently — and the tensors are all-reduced once
+        after the loop.  Detected automatically when the model was prepared with
+        :func:`gromo.prepare`. Default is None.
 
     Returns
     -------
@@ -413,6 +457,12 @@ def compute_statistics(
         "The loss function should not be averaged over the batch"
     )
 
+    # An explicit device= is interpreted as single-process mode; skip
+    # auto-detection to avoid triggering collective operations on one rank only.
+    if accelerator is None and device is None:
+        accelerator = _get_accelerator(model)
+    if accelerator is None and device is None:
+        accelerator = Accelerator()
     if accelerator is not None:
         device = accelerator.device
 
@@ -423,11 +473,10 @@ def compute_statistics(
         metrics.reset()
         metrics = metrics.to(device)
 
-    # When the model is wrapped in DDP by accelerator.prepare(), the custom
-    # GrowingContainer methods are on the inner module, not the wrapper.
     raw_model: GrowingContainer = (
-        accelerator.unwrap_model(model) if accelerator is not None else model
-    )
+        _get_raw_model(model) if accelerator is not None else model
+    )  # type: ignore[assignment]
+    prepared_model = _get_prepared_model(model)  # DDP model for no_sync()
 
     raw_model.init_computation()
     model.eval()
@@ -439,7 +488,7 @@ def compute_statistics(
         y_pred = model(x)
         loss = loss_function(y_pred, y)
         if accelerator is not None:
-            with accelerator.no_sync(model):
+            with accelerator.no_sync(prepared_model):
                 accelerator.backward(loss)
         else:
             loss.backward()
@@ -457,15 +506,12 @@ def compute_statistics(
     return loss_meter.compute().item(), metrics.compute().item()
 
 
-# backward compatibility
-# I could not keep it in utils.py because of circular imports,
-# with `global_device` being defined in utils.py and used
-# in `growing_container.py`
 def evaluate_extended_dataset(
     model: nn.Module,
     dataloader: torch.utils.data.DataLoader,
     loss_fn: Callable,
     mask: dict | None = None,
+    accelerator: Accelerator | None = None,
 ) -> tuple[float, float]:
     """Evaluate extended network on dataset
 
@@ -480,29 +526,30 @@ def evaluate_extended_dataset(
     mask : dict | None, optional
         extension mask for specific nodes and edges, by default None
         example: mask["edges"] for edges and mask["nodes"] for nodes
+    accelerator : Accelerator | None, optional
+        Accelerator instance for distributed evaluation. When None an
+        :class:`~accelerate.Accelerator` is created automatically.
 
     Returns
     -------
     tuple[float, float]
         accuracy and loss
     """
-    device = global_device()
     _, y = next(iter(dataloader))
-    if y.dim() == 1 and model.out_features > 1:
-        nb_classes = model.out_features
-    else:
-        nb_classes = None
-    metric = None
-    if nb_classes is not None:
-        metric = classification.MulticlassAccuracy(model.out_features, average="micro")
+    nb_classes = model.out_features if (y.dim() == 1 and model.out_features > 1) else None
+    metric = (
+        classification.MulticlassAccuracy(model.out_features, average="micro")
+        if nb_classes is not None
+        else None
+    )
     loss, accuracy = evaluate_model(
         model,
         dataloader,
         loss_fn,
         metrics=metric,
-        device=device,
         use_extended_model=True,
         mask=mask,
+        accelerator=accelerator,
     )
     if metric is None:
         accuracy = -1
@@ -510,7 +557,10 @@ def evaluate_extended_dataset(
 
 
 def evaluate_dataset(
-    model: nn.Module, dataloader: torch.utils.data.DataLoader, loss_fn: Callable
+    model: nn.Module,
+    dataloader: torch.utils.data.DataLoader,
+    loss_fn: Callable,
+    accelerator: Accelerator | None = None,
 ) -> tuple[float, float]:
     """Evaluate network on dataset
 
@@ -522,23 +572,24 @@ def evaluate_dataset(
         dataloader containing the data
     loss_fn : Callable
         loss function for bottleneck calculation
+    accelerator : Accelerator | None, optional
+        Accelerator instance for distributed evaluation. When None an
+        :class:`~accelerate.Accelerator` is created automatically.
 
     Returns
     -------
     tuple[float, float]
         accuracy and loss
     """
-    device = global_device()
     _, y = next(iter(dataloader))
-    if y.dim() == 1 and model.out_features > 1:
-        nb_classes = model.out_features
-    else:
-        nb_classes = None
-    metric = None
-    if nb_classes is not None:
-        metric = classification.MulticlassAccuracy(model.out_features, average="micro")
+    nb_classes = model.out_features if (y.dim() == 1 and model.out_features > 1) else None
+    metric = (
+        classification.MulticlassAccuracy(model.out_features, average="micro")
+        if nb_classes is not None
+        else None
+    )
     loss, accuracy = evaluate_model(
-        model, dataloader, loss_fn, metrics=metric, device=device
+        model, dataloader, loss_fn, metrics=metric, accelerator=accelerator
     )
     if metric is None:
         accuracy = -1

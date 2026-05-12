@@ -106,12 +106,8 @@ class TensorStatistic:
             self.updated = True
             return update, nb_sample
 
-    def sync(self, accelerator: "Accelerator") -> None:
-        """All-reduce accumulated statistics across distributed processes.
-
-        Call this after a loop that used ``accelerator.no_sync()`` so that each
-        process's locally-accumulated sum and sample count are summed across all
-        ranks, yielding the globally-correct statistic.
+    def sync(self, accelerator: Accelerator) -> None:
+        """All-reduce the accumulated tensor and sample count across all processes.
 
         Parameters
         ----------

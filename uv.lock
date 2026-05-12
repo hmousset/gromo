@@ -750,6 +750,7 @@ name = "gromo"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "accelerate" },
     { name = "build" },
     { name = "deprecated" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -762,9 +763,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-accelerate = [
-    { name = "accelerate" },
-]
 dev = [
     { name = "pre-commit" },
     { name = "pydoclint" },
@@ -794,7 +792,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", marker = "extra == 'accelerate'" },
+    { name = "accelerate" },
     { name = "build" },
     { name = "coverage", marker = "extra == 'test'" },
     { name = "deprecated" },
@@ -820,7 +818,7 @@ requires-dist = [
     { name = "torch" },
     { name = "torchmetrics" },
 ]
-provides-extras = ["test", "dev", "accelerate", "doc"]
+provides-extras = ["test", "dev", "doc"]
 
 [[package]]
 name = "h11"

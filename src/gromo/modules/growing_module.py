@@ -14,11 +14,12 @@ from typing import (
 import numpy as np
 import torch
 
+from gromo.config.loader import load_config
+
 
 if TYPE_CHECKING:
     from accelerate import Accelerator
 
-from gromo.config.loader import load_config
 from gromo.utils.tensor_statistic import TensorStatistic
 from gromo.utils.tools import (
     compute_optimal_added_parameters,
@@ -404,7 +405,7 @@ class MergeGrowingModule(torch.nn.Module):
         if self.previous_tensor_m is not None:
             self.previous_tensor_m.reset()
 
-    def sync_computation(self, accelerator: "Accelerator") -> None:
+    def sync_computation(self, accelerator: Accelerator) -> None:
         """All-reduce accumulated statistics across distributed processes.
 
         Must be called after the statistics loop that used ``no_sync()`` to
@@ -2647,17 +2648,11 @@ class GrowingModule(torch.nn.Module):
         else:
             raise NotImplementedError
 
-    def sync_computation(self, accelerator: "Accelerator") -> None:
+    def sync_computation(self, accelerator: Accelerator) -> None:
         """All-reduce accumulated statistics across distributed processes.
 
-        Must be called after the statistics loop that used ``no_sync()`` to
+        Must be called after a statistics loop that used ``no_sync()`` to
         aggregate each process's local sums into globally-correct tensors.
-
-        ``tensor_s_growth`` (an alias for ``previous_module.tensor_s``) is
-        intentionally *not* synced here: when iterating all growing layers via
-        :meth:`~gromo.containers.growing_container.GrowingContainer.sync_computation`,
-        the previous module's ``tensor_s`` is already synced by that module's
-        own call.
 
         Parameters
         ----------

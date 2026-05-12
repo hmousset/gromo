@@ -35,6 +35,10 @@ class _FakeAccelerator:
         self.reduce_calls.append((tensor.clone(), reduction))
         return tensor
 
+    def unwrap_model(self, model):
+        """Return the model unchanged (no DDP wrapping in single-process)."""
+        return model
+
     @contextmanager
     def no_sync(self, model):
         """No-op context manager that records usage."""

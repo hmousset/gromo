@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from gromo.config.loader import load_config
-from gromo.modules.growing_module import GrowingModule, MergeGrowingModule
-from gromo.utils.utils import get_correct_device
 
 
 if TYPE_CHECKING:
     from accelerate import Accelerator
+from gromo.modules.growing_module import GrowingModule, MergeGrowingModule
+from gromo.utils.utils import get_correct_device
 
 
 class GrowingContainer(torch.nn.Module):
@@ -47,6 +47,30 @@ class GrowingContainer(torch.nn.Module):
             "GrowingModule | MergeGrowingModule | GrowingContainer"
         ] = list()
         self.currently_updated_layer_index = None
+
+        # Set by gromo.prepare(). Stored via object.__setattr__ so that
+        # nn.Module does not register _ddp as a submodule, which would corrupt
+        # parameters() and state_dict().
+        object.__setattr__(self, "_accelerator", None)
+        object.__setattr__(self, "_ddp", None)
+        object.__setattr__(self, "_in_ddp_forward", False)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Forward call, routing through the DDP wrapper when set by :func:`gromo.prepare`.
+
+        The re-entrancy flag ``_in_ddp_forward`` prevents infinite recursion:
+        DDP calls ``self.module(*args)`` which re-enters this method, at which
+        point the flag is already set and the call falls through to the standard
+        :class:`~torch.nn.Module` path.
+        """
+        ddp = self.__dict__.get("_ddp")
+        if ddp is not None and not self.__dict__.get("_in_ddp_forward", False):
+            self.__dict__["_in_ddp_forward"] = True
+            try:
+                return ddp(*args, **kwargs)
+            finally:
+                self.__dict__["_in_ddp_forward"] = False
+        return super().__call__(*args, **kwargs)
 
     def set_growing_layers(self) -> None:
         """
@@ -101,7 +125,7 @@ class GrowingContainer(torch.nn.Module):
         for layer in self._growing_layers:
             layer.reset_computation()
 
-    def sync_computation(self, accelerator: "Accelerator") -> None:
+    def sync_computation(self, accelerator: Accelerator) -> None:
         """All-reduce accumulated statistics across distributed processes.
 
         Call after a ``compute_statistics`` loop that used ``no_sync()`` so
@@ -114,8 +138,17 @@ class GrowingContainer(torch.nn.Module):
             The Accelerate :class:`~accelerate.Accelerator` managing the
             distributed environment.
         """
+        growing_ids = {id(layer) for layer in self._growing_layers}
         for layer in self._growing_layers:
             layer.sync_computation(accelerator)
+        # Sync tensor_s of predecessors that are not themselves growing layers
+        # (e.g. the first_layer of each block in GrowingResidualMLP), since
+        # their tensor_s is used as tensor_s_growth by the growing layer that
+        # follows them.
+        for layer in self._growing_layers:
+            prev = getattr(layer, "previous_module", None)
+            if isinstance(prev, GrowingModule) and id(prev) not in growing_ids:
+                prev.tensor_s.sync(accelerator)
 
     def compute_optimal_delta(
         self,
