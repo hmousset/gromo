@@ -5,6 +5,7 @@ import torch.utils.data
 from torch import nn
 from torchmetrics import Metric
 
+import gromo
 from gromo.containers.growing_container import GrowingContainer, GrowingModel
 from gromo.utils.training_utils import (
     AverageMeter,
@@ -38,6 +39,12 @@ class _FakeAccelerator:
     def unwrap_model(self, model):
         """Return the model unchanged (no DDP wrapping in single-process)."""
         return model
+
+    def prepare(self, *args):
+        """Return args unchanged (no DDP wrapping in single-process)."""
+        if len(args) == 1:
+            return args[0]
+        return args
 
     @contextmanager
     def no_sync(self, model):
@@ -600,3 +607,152 @@ class TestComputeStatisticsWithAccelerator(TorchTestCase):
         )
 
         self.assertAlmostEqual(loss_ref, loss_acc, places=5)
+
+
+# ---------------------------------------------------------------------------
+# gromo.prepare() and GrowingContainer DDP routing
+# ---------------------------------------------------------------------------
+
+
+class _FakeDDP:
+    """Minimal DDP stand-in that records calls and forwards to the wrapped model."""
+
+    def __init__(self, model: nn.Module):
+        self.module = model
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.module(*args, **kwargs)
+
+
+class TestGromoPrepareSetsAttributes(TorchTestCase):
+    """gromo.prepare() stores _ddp and _accelerator on the GrowingContainer."""
+
+    def test_model_only_returns_model(self):
+        """prepare(acc, model) returns the model when no extra args are given."""
+        model = _SimpleGrowingModel(4, 2)
+        acc = _FakeAccelerator()
+        result = gromo.prepare(acc, model)
+        self.assertIs(result, model)
+
+    def test_model_with_extra_args_returns_tuple(self):
+        """prepare(acc, model, dl) returns (model, prepared_dl)."""
+        model = _SimpleGrowingModel(4, 2)
+        acc = _FakeAccelerator()
+        dl = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(torch.randn(4, 4), torch.randn(4, 2)),
+            batch_size=2,
+        )
+        result = gromo.prepare(acc, model, dl)
+        self.assertIsInstance(result, tuple)
+        self.assertIs(result[0], model)
+
+    def test_accelerator_stored_on_model(self):
+        """After prepare, model.__dict__['_accelerator'] is the accelerator."""
+        model = _SimpleGrowingModel(4, 2)
+        acc = _FakeAccelerator()
+        gromo.prepare(acc, model)
+        self.assertIs(model.__dict__["_accelerator"], acc)
+
+    def test_ddp_stored_on_model(self):
+        """After prepare, model.__dict__['_ddp'] is the prepared (DDP-wrapped) model."""
+        model = _SimpleGrowingModel(4, 2)
+        acc = _FakeAccelerator()
+        gromo.prepare(acc, model)
+        # _FakeAccelerator.prepare returns model unchanged (single-process stub).
+        self.assertIsNotNone(model.__dict__["_ddp"])
+
+    def test_prepare_does_not_register_ddp_as_submodule(self):
+        """_ddp must not appear in model.parameters() or state_dict()."""
+        model = _SimpleGrowingModel(4, 2)
+        acc = _FakeAccelerator()
+        gromo.prepare(acc, model)
+        submodule_names = {name for name, _ in model.named_modules()}
+        self.assertNotIn("_ddp", submodule_names)
+        self.assertNotIn("_accelerator", submodule_names)
+
+
+class TestGrowingContainerDDPRouting(TorchTestCase):
+    """GrowingContainer.__call__ routes through the DDP wrapper when set."""
+
+    def test_call_routes_through_ddp(self):
+        """When _ddp is set, the forward call goes through it."""
+        model = _SimpleGrowingModel(4, 2)
+        fake_ddp = _FakeDDP(model)
+        model.__dict__["_ddp"] = fake_ddp
+        x = torch.randn(2, 4)
+        model(x)
+        self.assertEqual(fake_ddp.calls, 1)
+
+    def test_call_without_ddp_is_direct(self):
+        """Without _ddp, the forward call goes directly to nn.Module."""
+        model = _SimpleGrowingModel(4, 2)
+        x = torch.randn(2, 4)
+        out = model(x)
+        self.assertEqual(out.shape, (2, 2))
+
+    def test_reentrancy_flag_prevents_infinite_recursion(self):
+        """DDP calling model(*args) re-enters __call__ but falls through correctly."""
+        model = _SimpleGrowingModel(4, 2)
+
+        # Simulate DDP: calling model() from inside the DDP forward triggers
+        # __call__ again; the re-entrancy flag must prevent infinite recursion.
+        call_count = [0]
+
+        class _ReentrantDDP:
+            def __init__(self, m):
+                self.module = m
+
+            def __call__(self, *args, **kwargs):
+                call_count[0] += 1
+                # Simulate DDP calling self.module(*args) — this re-enters __call__.
+                return self.module(*args, **kwargs)
+
+        model.__dict__["_ddp"] = _ReentrantDDP(model)
+        x = torch.randn(2, 4)
+        out = model(x)
+        # The DDP wrapper was invoked once; no infinite recursion.
+        self.assertEqual(call_count[0], 1)
+        self.assertEqual(out.shape, (2, 2))
+
+
+class TestAutoDetectAccelerator(TorchTestCase):
+    """Training utilities auto-detect the accelerator from model.__dict__."""
+
+    @staticmethod
+    def _make_dataloader(
+        n_samples: int = 8, batch_size: int = 4
+    ) -> torch.utils.data.DataLoader:
+        x = torch.randn(n_samples, 4)
+        y = torch.randn(n_samples, 2)
+        return torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(x, y), batch_size=batch_size
+        )
+
+    def test_compute_statistics_uses_stored_accelerator(self):
+        """When _accelerator is set on the model, compute_statistics uses it."""
+        model = _SimpleGrowingContainer(4, 2)
+        acc = _FakeAccelerator()
+        model.__dict__["_accelerator"] = acc
+        model.__dict__["_ddp"] = model  # simplest DDP stub: identity
+
+        dl = self._make_dataloader()
+        compute_statistics(model, dl, nn.MSELoss(reduction="sum"))
+
+        self.assertGreater(acc.no_sync_calls, 0)
+        self.assertGreater(acc.backward_calls, 0)
+
+    def test_explicit_device_suppresses_auto_detection(self):
+        """Passing device= prevents auto-detection of the stored accelerator."""
+        model = _SimpleGrowingContainer(4, 2)
+        acc = _FakeAccelerator()
+        model.__dict__["_accelerator"] = acc
+
+        dl = self._make_dataloader()
+        compute_statistics(
+            model, dl, nn.MSELoss(reduction="sum"), device=torch.device("cpu")
+        )
+
+        self.assertEqual(acc.no_sync_calls, 0)
+        self.assertEqual(acc.backward_calls, 0)
