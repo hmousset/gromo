@@ -407,6 +407,7 @@ class GrowingBlock(GrowingContainer):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> None:
         """
         Compute the optimal update for second layer and additional neurons.
@@ -446,6 +447,10 @@ class GrowingBlock(GrowingContainer):
         use_fisher: bool
             If True, use the empirical Fisher / gradient covariance as
             preconditioner on the output side. Default is False.
+        fisher_shrinkage: float
+            If > 0, ridge-shrink the gradient covariance E to
+            E + fisher_shrinkage * tr(E)/d * I and whiten it without truncation.
+            Default is 0.0 (production absolute-threshold behaviour).
 
         Note
         ----
@@ -491,6 +496,7 @@ class GrowingBlock(GrowingContainer):
                 use_projection=False,  # Must be False when hidden_neurons == 0
                 ignore_singular_values=ignore_singular_values,
                 use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
             )
         else:
             # When hidden_neurons > 0, delegate to second layer's
@@ -509,6 +515,7 @@ class GrowingBlock(GrowingContainer):
                 use_projection=use_projection,
                 ignore_singular_values=ignore_singular_values,
                 use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
             )
 
     def apply_change(

@@ -2267,6 +2267,7 @@ class GrowingModule(torch.nn.Module):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Auxiliary function to compute the optimal added parameters (alpha, omega, k)
@@ -2298,6 +2299,10 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
+        fisher_shrinkage: float
+            if > 0, replace E by E + fisher_shrinkage * tr(E)/d * I and whiten it
+            without truncation. Avoids the absolute-threshold rank collapse of E
+            when the gradient covariance spectrum sits near the numerical threshold.
 
         Returns
         -------
@@ -2329,6 +2334,14 @@ class GrowingModule(torch.nn.Module):
         if matrix_e is not None and matrix_e.dtype != dtype:
             matrix_e = matrix_e.to(dtype=dtype)
 
+        e_numerical_threshold: float | None = None
+        if matrix_e is not None and fisher_shrinkage > 0:
+            d = matrix_e.shape[0]
+            matrix_e = matrix_e + fisher_shrinkage * (matrix_e.trace() / d) * torch.eye(
+                d, device=matrix_e.device, dtype=matrix_e.dtype
+            )
+            e_numerical_threshold = 0.0
+
         # Call tools function with primitive options
         alpha, omega, eigenvalues_extension = compute_optimal_added_parameters(
             matrix_s=matrix_s,
@@ -2340,6 +2353,7 @@ class GrowingModule(torch.nn.Module):
             omega_zero=omega_zero,
             ignore_singular_values=ignore_singular_values,
             matrix_covariance_loss_gradient=matrix_e,
+            e_numerical_threshold=e_numerical_threshold,
         )
 
         alpha = alpha.to(dtype=saved_dtype)
@@ -2365,6 +2379,7 @@ class GrowingModule(torch.nn.Module):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         """
         Compute the optimal added parameters to extend the input layer.
@@ -2467,6 +2482,7 @@ class GrowingModule(torch.nn.Module):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """
         Compute the optimal update and additional neurons.
@@ -2527,6 +2543,9 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             Whether to use the covariance of the loss gradient as an additional
             preconditioner for delta and neuron-extension computations.
+        fisher_shrinkage: float
+            If > 0, ridge-shrink the gradient covariance E to
+            E + fisher_shrinkage * tr(E)/d * I and whiten it without truncation.
 
         Returns
         -------
@@ -2581,6 +2600,7 @@ class GrowingModule(torch.nn.Module):
                 use_projection=use_projection,
                 ignore_singular_values=ignore_singular_values,
                 use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
             )
             return alpha_weight, alpha_bias
         elif isinstance(self.previous_module, MergeGrowingModule):
