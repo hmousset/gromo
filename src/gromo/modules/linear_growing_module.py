@@ -938,6 +938,7 @@ class LinearGrowingModule(GrowingModule):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         """
         Compute the optimal added parameters to extend the input layer.
@@ -998,6 +999,7 @@ class LinearGrowingModule(GrowingModule):
             use_projection=use_projection,
             ignore_singular_values=ignore_singular_values,
             use_fisher=use_fisher,
+            fisher_shrinkage=fisher_shrinkage,
         )
         k = self.eigenvalues_extension.shape[0]
         assert alpha.shape[0] == omega.shape[1], (

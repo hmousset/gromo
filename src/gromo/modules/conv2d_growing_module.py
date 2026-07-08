@@ -1301,12 +1301,20 @@ class Conv2dGrowingModule(GrowingModule):
         self._input_size = new_size
         return self._input_size
 
-    def update_computation(self) -> None:
+    def update_computation(self, update_covariance_loss_gradient: bool = True) -> None:
         """
         Update the computation of the layer.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            if False, skip the gradient-covariance statistic (see
+            GrowingModule.update_computation).
         """
         self.update_input_size()
-        super(Conv2dGrowingModule, self).update_computation()
+        super(Conv2dGrowingModule, self).update_computation(
+            update_covariance_loss_gradient=update_covariance_loss_gradient
+        )
 
     def get_fan_in_from_layer(  # type: ignore
         self, layer: torch.nn.Conv2d | None = None, num_neurons: int | None = None
