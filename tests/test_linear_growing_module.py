@@ -1689,10 +1689,11 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         return layer.eigenvalues_extension
 
     def test_compute_optimal_added_parameters_fisher_shrinkage_closed_form(self):
-        """fisher_shrinkage eigenvalues = svdvals(S^{-1/2} N (E + eps*tr(E)/d I)^{-1/2})."""
-        eps = 0.1
+        """fisher_shrinkage eigenvalues match
+        svdvals(S^{-1/2} N ((1-a) E + a tr(E)/d I)^{-1/2})."""
+        alpha = 0.1
         layer2 = self._fisher_two_layer_setup()
-        eigenvalues = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=eps)
+        eigenvalues = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=alpha)
 
         s = layer2.tensor_s_growth().to(torch.float32)
         s = (s + s.t()) / 2
@@ -1700,7 +1701,9 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         e = layer2.covariance_loss_gradient().to(torch.float32)
         e = (e + e.t()) / 2
         d = e.shape[0]
-        e_shrunk = e + eps * (e.trace() / d) * torch.eye(d, device=e.device)
+        e_shrunk = (1 - alpha) * e + alpha * (e.trace() / d) * torch.eye(
+            d, device=e.device
+        )
         p = (
             sqrt_inverse_matrix_semi_positive(s, threshold=1e-6)
             @ n
@@ -1719,6 +1722,12 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         ).clone()
         eig_shrunk = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=0.0)
         self.assertAllClose(eig_default, eig_shrunk)
+
+    def test_fisher_shrinkage_out_of_range_rejected(self):
+        """Shrinkage intensity is a convex-combination weight: must be <= 1."""
+        layer2 = self._fisher_two_layer_setup()
+        with self.assertRaises(AssertionError):
+            self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=1.5)
 
     def test_fisher_shrinkage_rescues_truncated_e(self):
         """When E's spectrum sits below the whitening threshold, the default

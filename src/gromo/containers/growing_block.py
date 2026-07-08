@@ -448,9 +448,9 @@ class GrowingBlock(GrowingContainer):
             If True, use the empirical Fisher / gradient covariance as
             preconditioner on the output side. Default is False.
         fisher_shrinkage: float
-            If > 0, ridge-shrink the gradient covariance E to
-            E + fisher_shrinkage * tr(E)/d * I and whiten it without truncation.
-            Default is 0.0 (production absolute-threshold behaviour).
+            Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
+            covariance E to (1 - alpha) * E + alpha * tr(E)/d * I and whiten it
+            without truncation. Default is 0.0 (absolute-threshold behaviour).
 
         Note
         ----

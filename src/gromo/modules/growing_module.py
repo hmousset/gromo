@@ -2300,9 +2300,11 @@ class GrowingModule(torch.nn.Module):
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
         fisher_shrinkage: float
-            if > 0, replace E by E + fisher_shrinkage * tr(E)/d * I and whiten it
-            without truncation. Avoids the absolute-threshold rank collapse of E
-            when the gradient covariance spectrum sits near the numerical threshold.
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Avoids the absolute-threshold rank collapse of E when
+            the gradient covariance spectrum sits near the numerical threshold.
 
         Returns
         -------
@@ -2336,10 +2338,13 @@ class GrowingModule(torch.nn.Module):
 
         e_numerical_threshold: float | None = None
         if matrix_e is not None and fisher_shrinkage > 0:
-            d = matrix_e.shape[0]
-            matrix_e = matrix_e + fisher_shrinkage * (matrix_e.trace() / d) * torch.eye(
-                d, device=matrix_e.device, dtype=matrix_e.dtype
+            assert fisher_shrinkage <= 1.0, (
+                f"fisher_shrinkage must be in [0, 1], got {fisher_shrinkage}"
             )
+            d = matrix_e.shape[0]
+            matrix_e = (1 - fisher_shrinkage) * matrix_e + fisher_shrinkage * (
+                matrix_e.trace() / d
+            ) * torch.eye(d, device=matrix_e.device, dtype=matrix_e.dtype)
             e_numerical_threshold = 0.0
 
         # Call tools function with primitive options
@@ -2544,8 +2549,9 @@ class GrowingModule(torch.nn.Module):
             Whether to use the covariance of the loss gradient as an additional
             preconditioner for delta and neuron-extension computations.
         fisher_shrinkage: float
-            If > 0, ridge-shrink the gradient covariance E to
-            E + fisher_shrinkage * tr(E)/d * I and whiten it without truncation.
+            Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
+            covariance E to (1 - alpha) * E + alpha * tr(E)/d * I and whiten it
+            without truncation.
 
         Returns
         -------
