@@ -6,6 +6,7 @@ from unittest import mock
 
 import torch
 
+from gromo.containers.growing_container import GrowingContainer
 from gromo.modules.linear_growing_module import (
     LinearGrowingModule,
     LinearMergeGrowingModule,
@@ -1754,6 +1755,150 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
             self._fisher_two_layer_setup(loss_scale=100.0), fisher_shrinkage=0.1
         )
         self.assertAllClose(eig_base, eig_scaled, atol=1e-6, rtol=1e-3)
+
+    def test_update_covariance_loss_gradient_count_samples(self):
+        """Repeated covariance updates on one batch: numerator accumulates,
+        samples are counted only when count_samples=True."""
+        in_features, out_features, batch = 3, 4, 6
+        layer = LinearGrowingModule(in_features, out_features, device=global_device())
+        layer.init_computation()
+        x = torch.randn(batch, in_features, device=global_device())
+        layer(x).pow(2).sum().backward()
+
+        layer.update_covariance_loss_gradient(count_samples=True)
+        once = layer.covariance_loss_gradient().clone()
+        self.assertEqual(layer.covariance_loss_gradient.samples, batch)
+
+        layer.update_covariance_loss_gradient(count_samples=False)
+        self.assertEqual(layer.covariance_loss_gradient.samples, batch)
+        self.assertAllClose(layer.covariance_loss_gradient(), 2 * once)
+
+    def test_update_computation_skips_covariance(self):
+        """update_computation(update_covariance_loss_gradient=False) updates S
+        and M but leaves the gradient covariance untouched."""
+        in_features, out_features, batch = 3, 4, 6
+        layer = LinearGrowingModule(in_features, out_features, device=global_device())
+        layer.init_computation()
+        x = torch.randn(batch, in_features, device=global_device())
+        layer(x).pow(2).sum().backward()
+
+        layer.update_computation(update_covariance_loss_gradient=False)
+        self.assertEqual(layer.tensor_s.samples, batch)
+        self.assertEqual(layer.tensor_m.samples, batch)
+        self.assertEqual(layer.covariance_loss_gradient.samples, 0)
+
+    def test_clear_pre_activity_grad(self):
+        """clear_pre_activity_grad drops the retained gradient so successive
+        backward passes do not accumulate."""
+        in_features, out_features, batch = 3, 4, 6
+        layer = LinearGrowingModule(in_features, out_features, device=global_device())
+        layer.init_computation()
+        x = torch.randn(batch, in_features, device=global_device())
+        out = layer(x)
+        out.pow(2).sum().backward(retain_graph=True)
+        self.assertIsNotNone(layer.pre_activity.grad)
+        first_grad = layer.pre_activity.grad.clone()
+
+        # without clearing, a second backward accumulates
+        out.pow(2).sum().backward(retain_graph=True)
+        self.assertAllClose(layer.pre_activity.grad, 2 * first_grad)
+
+        layer.clear_pre_activity_grad()
+        self.assertIsNone(layer.pre_activity.grad)
+        out.pow(2).sum().backward()
+        self.assertAllClose(layer.pre_activity.grad, first_grad)
+
+    def _true_fisher_container(self, n_classes: int, batch: int):
+        """Container wrapping one classifier-head layer, with S/M accumulated
+        from a real-label backward and the graph retained for the Fisher."""
+        torch.manual_seed(3)
+        in_features = 3
+        layer = LinearGrowingModule(in_features, n_classes, device=global_device())
+        container = GrowingContainer(in_features, n_classes, device=global_device())
+        container._growing_layers = [layer]
+        layer.init_computation()
+        x = torch.randn(batch, in_features, device=global_device())
+        labels = torch.randint(0, n_classes, (batch,), device=global_device())
+
+        logits = layer(x)
+        loss = torch.nn.functional.cross_entropy(logits, labels, reduction="mean")
+        loss.backward(retain_graph=True)
+        container.update_computation(update_covariance_loss_gradient=False)
+        return container, layer, logits
+
+    def test_true_fisher_closed_form(self):
+        """accumulate_true_fisher_covariance yields the exact Fisher of the
+        softmax head, F = E[diag(p) - p p^T] (up to the shared loss
+        normalisation), instead of the label-dependent empirical Fisher."""
+        for n_classes in (2, 3):
+            with self.subTest(n_classes=n_classes):
+                batch = 16
+                container, layer, logits = self._true_fisher_container(n_classes, batch)
+                container.accumulate_true_fisher_covariance(logits)
+
+                # real-label pass must not have touched E
+                self.assertEqual(layer.tensor_s.samples, batch)
+                self.assertEqual(layer.covariance_loss_gradient.samples, batch)
+
+                # seeds are sqrt(lambda_j) v_j / batch, so the statistic reads
+                # (1/batch^3) sum_i F_z(x_i) with F_z = diag(p) - p p^T.
+                probs = torch.softmax(logits, dim=-1).detach()
+                expected = torch.zeros(n_classes, n_classes, device=global_device())
+                for i in range(batch):
+                    p = probs[i]
+                    expected += torch.diag(p) - torch.outer(p, p)
+                expected /= batch**3
+                self.assertAllClose(
+                    layer.covariance_loss_gradient(),
+                    expected,
+                    atol=1e-8,
+                    rtol=1e-4,
+                )
+
+    def test_update_computation_true_fisher_one_call(self):
+        """update_computation_true_fisher = real backward for S/M + seeded
+        Fisher passes for E, in one call."""
+
+        def build():
+            torch.manual_seed(3)
+            layer = LinearGrowingModule(3, 2, device=global_device())
+            container = GrowingContainer(3, 2, device=global_device())
+            container._growing_layers = [layer]
+            layer.init_computation()
+            x = torch.randn(8, 3, device=global_device())
+            labels = torch.randint(0, 2, (8,), device=global_device())
+            logits = layer(x)
+            loss = torch.nn.functional.cross_entropy(logits, labels)
+            return container, layer, loss, logits
+
+        container, layer, loss, logits = build()
+        container.update_computation_true_fisher(loss, logits)
+
+        container_m, layer_m, loss_m, logits_m = build()
+        loss_m.backward(retain_graph=True)
+        container_m.update_computation(update_covariance_loss_gradient=False)
+        container_m.accumulate_true_fisher_covariance(logits_m)
+
+        self.assertAllClose(layer.tensor_s(), layer_m.tensor_s())
+        self.assertAllClose(layer.tensor_m(), layer_m.tensor_m())
+        self.assertAllClose(
+            layer.covariance_loss_gradient(), layer_m.covariance_loss_gradient()
+        )
+
+    def test_true_fisher_binary_single_backward(self):
+        """For K=2 the logits Fisher is rank one, so the exact true Fisher
+        costs a single extra backward pass."""
+        container, _layer, logits = self._true_fisher_container(2, batch=8)
+        calls = []
+        original = torch.autograd.backward
+
+        def counting_backward(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+
+        with mock.patch("torch.autograd.backward", side_effect=counting_backward):
+            container.accumulate_true_fisher_covariance(logits)
+        self.assertEqual(len(calls), 1)
 
     def test_compute_optimal_delta_use_fisher_closed_form(self):
         r"""

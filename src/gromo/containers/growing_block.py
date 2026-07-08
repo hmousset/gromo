@@ -348,14 +348,21 @@ class GrowingBlock(GrowingContainer):
             self.second_layer.tensor_s.init()
             self.second_layer.tensor_m.init()
 
-    def update_computation(self):
+    def update_computation(self, update_covariance_loss_gradient: bool = True):
         """
         Update the computation of the block.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            if False, skip the gradient-covariance statistic (see
+            GrowingModule.update_computation).
         """
         # growth part
         self.second_layer.tensor_m_prev.update()
         self.second_layer.tensor_s_growth.update()
-        self.second_layer.covariance_loss_gradient.update()
+        if update_covariance_loss_gradient:
+            self.second_layer.covariance_loss_gradient.update()
 
         if self.hidden_neurons > 0:
             self.second_layer.cross_covariance.update()
@@ -363,6 +370,16 @@ class GrowingBlock(GrowingContainer):
             # natural gradient part
             self.second_layer.tensor_m.update()
             self.second_layer.tensor_s.update()
+
+    def update_covariance_loss_gradient(self, count_samples: bool = True) -> None:
+        """Update only the gradient-covariance statistic of the second layer."""
+        self.second_layer.update_covariance_loss_gradient(count_samples=count_samples)
+
+    def clear_pre_activity_grad(self) -> None:
+        """Clear retained pre-activity gradients of the block's layers."""
+        for layer in (self.first_layer, self.second_layer):
+            if hasattr(layer, "clear_pre_activity_grad"):
+                layer.clear_pre_activity_grad()
 
     def reset_computation(self):
         """

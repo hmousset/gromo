@@ -366,15 +366,30 @@ class MergeGrowingModule(torch.nn.Module):
         if self.previous_tensor_m is not None:
             self.previous_tensor_m.init()
 
-    def update_computation(self) -> None:
+    def update_computation(
+        self,
+        update_covariance_loss_gradient: bool = True,  # noqa: ARG002
+    ) -> None:
         """
         Update the computation of the optimal added parameters.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            accepted for interface compatibility; merge modules have no
+            gradient-covariance statistic.
         """
         self.tensor_s.update()
         if self.previous_tensor_s is not None:
             self.previous_tensor_s.update()
         if self.previous_tensor_m is not None:
             self.previous_tensor_m.update()
+
+    def update_covariance_loss_gradient(self, count_samples: bool = True) -> None:
+        """No-op: merge modules have no gradient-covariance statistic."""
+
+    def clear_pre_activity_grad(self) -> None:
+        """No-op: merge modules do not retain a pre-activity gradient."""
 
     def reset_computation(self) -> None:
         """
@@ -2635,13 +2650,22 @@ class GrowingModule(torch.nn.Module):
         else:
             raise NotImplementedError
 
-    def update_computation(self) -> None:
+    def update_computation(self, update_covariance_loss_gradient: bool = True) -> None:
         """
         Update the computation of the optimal added parameters.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            if False, skip the gradient-covariance statistic. Used by
+            multi-backward accumulation schemes (e.g. the true Fisher) where
+            E is accumulated separately via update_covariance_loss_gradient
+            while S and M keep the real-label gradient.
         """
         self.tensor_s.update()
         self.tensor_m.update()
-        self.covariance_loss_gradient.update()
+        if update_covariance_loss_gradient:
+            self.covariance_loss_gradient.update()
         if self.previous_module is None:
             return
         elif isinstance(self.previous_module, GrowingModule):
@@ -2652,6 +2676,39 @@ class GrowingModule(torch.nn.Module):
             self.previous_module.update_computation()
         else:
             raise NotImplementedError
+
+    def update_covariance_loss_gradient(self, count_samples: bool = True) -> None:
+        """
+        Update only the gradient-covariance statistic from the current
+        pre-activity gradient.
+
+        Building block for exact ('true') Fisher accumulation — see
+        GrowingContainer.accumulate_true_fisher_covariance for the full
+        protocol. Call ``clear_pre_activity_grad`` before each backward:
+        retained gradients accumulate across passes. This method bypasses the
+        once-per-forward update guard, so the caller must run a fresh
+        backward between calls — calling it twice on the same gradient
+        double-counts it.
+
+        Parameters
+        ----------
+        count_samples: bool
+            count the batch into the statistic's sample counter. Pass True on
+            the first accumulation pass of a batch and False on the others so
+            the passes average as one batch.
+        """
+        self.covariance_loss_gradient.updated = False
+        self.covariance_loss_gradient.update(count_samples=count_samples)
+
+    def clear_pre_activity_grad(self) -> None:
+        """
+        Clear the retained gradient of the stored pre-activity.
+
+        Retained gradients accumulate across backward passes on the same
+        graph; multi-backward schemes must clear them between passes.
+        """
+        if self._pre_activity is not None and self._pre_activity.grad is not None:
+            self._pre_activity.grad = None
 
     def reset_computation(self) -> None:
         """
