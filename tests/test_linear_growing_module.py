@@ -11,6 +11,7 @@ from gromo.modules.linear_growing_module import (
     LinearMergeGrowingModule,
 )
 from gromo.utils.tensor_statistic import TensorStatistic
+from gromo.utils.tools import sqrt_inverse_matrix_semi_positive
 from gromo.utils.utils import global_device
 from tests.torch_unittest import (
     GrowableIdentity,
@@ -1650,6 +1651,100 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         alpha_w, _alpha_b = layer2.compute_optimal_updates(use_fisher=True)
         self.assertEqual(alpha_w.shape[1], in_features)
         self.assertEqual(layer2.eigenvalues_extension.ndim, 1)
+
+    def _fisher_two_layer_setup(self, loss_scale: float = 1.0, seed: int = 0):
+        """Two-layer net with accumulated statistics; returns the second layer."""
+        torch.manual_seed(seed)
+        in_features, hidden, out_features, batch = 4, 3, 5, 8
+        layer1 = LinearGrowingModule(
+            in_features, hidden, device=global_device(), name="l1"
+        )
+        layer2 = LinearGrowingModule(
+            hidden,
+            out_features,
+            device=global_device(),
+            previous_module=layer1,
+            name="l2",
+        )
+        net = torch.nn.Sequential(layer1, layer2)
+        layer1.init_computation()
+        layer2.init_computation()
+        x = torch.randn(batch, in_features, device=global_device())
+        (loss_scale * net(x).pow(2).sum()).backward()
+        layer1.update_computation()
+        layer2.update_computation()
+        return layer2
+
+    def _fisher_shrinkage_eigenvalues(
+        self, layer, fisher_shrinkage: float
+    ) -> torch.Tensor:
+        """Eigenvalues from compute_optimal_updates with the given shrinkage."""
+        layer.compute_optimal_updates(
+            statistical_threshold=0.0,
+            compute_delta=False,
+            use_projection=False,
+            use_fisher=True,
+            fisher_shrinkage=fisher_shrinkage,
+        )
+        return layer.eigenvalues_extension
+
+    def test_compute_optimal_added_parameters_fisher_shrinkage_closed_form(self):
+        """fisher_shrinkage eigenvalues = svdvals(S^{-1/2} N (E + eps*tr(E)/d I)^{-1/2})."""
+        eps = 0.1
+        layer2 = self._fisher_two_layer_setup()
+        eigenvalues = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=eps)
+
+        s = layer2.tensor_s_growth().to(torch.float32)
+        s = (s + s.t()) / 2
+        n = (-layer2.tensor_m_prev()).to(torch.float32)
+        e = layer2.covariance_loss_gradient().to(torch.float32)
+        e = (e + e.t()) / 2
+        d = e.shape[0]
+        e_shrunk = e + eps * (e.trace() / d) * torch.eye(d, device=e.device)
+        p = (
+            sqrt_inverse_matrix_semi_positive(s, threshold=1e-6)
+            @ n
+            @ sqrt_inverse_matrix_semi_positive(e_shrunk, threshold=0.0)
+        )
+        expected = torch.linalg.svdvals(p)
+        self.assertAllClose(
+            eigenvalues, expected[: eigenvalues.shape[0]], atol=1e-6, rtol=1e-4
+        )
+
+    def test_fisher_shrinkage_zero_matches_default(self):
+        """fisher_shrinkage=0 must reproduce the un-shrunk behaviour exactly."""
+        layer2 = self._fisher_two_layer_setup()
+        eig_default = self._fisher_shrinkage_eigenvalues(
+            layer2, fisher_shrinkage=0.0
+        ).clone()
+        eig_shrunk = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=0.0)
+        self.assertAllClose(eig_default, eig_shrunk)
+
+    def test_fisher_shrinkage_rescues_truncated_e(self):
+        """When E's spectrum sits below the whitening threshold, the default
+        truncates E to rank 0 (all-zero scores) while shrinkage keeps them."""
+        # loss_scale 1e-4 -> gradients ~1e-4 -> E ~1e-8, below the 1e-6 cutoff
+        layer2 = self._fisher_two_layer_setup(loss_scale=1e-4)
+        e_eigs = torch.linalg.eigvalsh(layer2.covariance_loss_gradient())
+        self.assertLess(float(e_eigs.max()), 1e-6)
+
+        eig_truncated = self._fisher_shrinkage_eigenvalues(
+            layer2, fisher_shrinkage=0.0
+        ).clone()
+        eig_shrunk = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=0.1)
+        self.assertAllClose(eig_truncated, torch.zeros_like(eig_truncated))
+        self.assertGreater(float(eig_shrunk.max()), 0.0)
+
+    def test_fisher_shrinkage_scale_equivariance(self):
+        """Scaling the loss by c scales N by c and E by c^2, so the shrunk
+        doubly-whitened scores are unchanged."""
+        eig_base = self._fisher_shrinkage_eigenvalues(
+            self._fisher_two_layer_setup(loss_scale=1.0), fisher_shrinkage=0.1
+        )
+        eig_scaled = self._fisher_shrinkage_eigenvalues(
+            self._fisher_two_layer_setup(loss_scale=100.0), fisher_shrinkage=0.1
+        )
+        self.assertAllClose(eig_base, eig_scaled, atol=1e-6, rtol=1e-3)
 
     def test_compute_optimal_delta_use_fisher_closed_form(self):
         r"""
