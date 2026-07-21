@@ -377,9 +377,8 @@ class GrowingBlock(GrowingContainer):
 
     def clear_pre_activity_grad(self) -> None:
         """Clear retained pre-activity gradients of the block's layers."""
-        for layer in (self.first_layer, self.second_layer):
-            if hasattr(layer, "clear_pre_activity_grad"):
-                layer.clear_pre_activity_grad()
+        self.first_layer.clear_pre_activity_grad()
+        self.second_layer.clear_pre_activity_grad()
 
     def reset_computation(self):
         """
