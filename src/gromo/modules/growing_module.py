@@ -2478,6 +2478,11 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
+        fisher_shrinkage: float
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Only has an effect when ``use_fisher`` is True.
 
         Returns
         -------
@@ -2713,6 +2718,12 @@ class GrowingModule(torch.nn.Module):
             multi-backward accumulation schemes (e.g. the true Fisher) where
             E is accumulated separately via update_covariance_loss_gradient
             while S and M keep the real-label gradient.
+
+        Raises
+        ------
+        NotImplementedError
+            if the previous module is neither a GrowingModule nor a
+            MergeGrowingModule.
         """
         self.tensor_s.update()
         self.tensor_m.update()

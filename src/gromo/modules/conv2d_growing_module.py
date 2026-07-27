@@ -1759,6 +1759,11 @@ class RestrictedConv2dGrowingModule(Conv2dGrowingModule):
         use_fisher: bool
             if True, use the empirical Fisher / gradient covariance as
             preconditioner on the output side.
+        fisher_shrinkage: float
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Only has an effect when ``use_fisher`` is True.
 
         Returns
         -------
@@ -2172,7 +2177,7 @@ class FullConv2dGrowingModule(Conv2dGrowingModule):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
-        fisher_shrinkage: float = 0.0,
+        fisher_shrinkage: float = 0.0,  # noqa: ARG002
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         """
         Compute the optimal added parameters to extend the input layer.
@@ -2208,6 +2213,9 @@ class FullConv2dGrowingModule(Conv2dGrowingModule):
             preconditioner. Not supported for FullConv2dGrowingModule because
             the SVD output dimension is `out_channels * k_h * k_w`, not
             `out_channels`.
+        fisher_shrinkage: float
+            accepted for interface compatibility; has no effect since
+            ``use_fisher`` is not supported here (see Raises).
 
         Returns
         -------
