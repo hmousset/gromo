@@ -971,6 +971,11 @@ class LinearGrowingModule(GrowingModule):
         use_fisher: bool
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
+        fisher_shrinkage: float
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Only has an effect when ``use_fisher`` is True.
 
         Returns
         -------

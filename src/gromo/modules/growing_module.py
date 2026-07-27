@@ -22,6 +22,38 @@ from gromo.utils.utils import (
 GRADIENT_COMPUTATION_EPSILON = 1e-5  # Small perturbation for gradient computation
 
 
+def _shrink_gradient_covariance(
+    matrix_e: torch.Tensor, fisher_shrinkage: float
+) -> torch.Tensor:
+    """Ledoit-Wolf-style ridge shrinkage of a gradient-covariance matrix E.
+
+    Replaces E by the convex combination (1 - alpha) * E + alpha * tr(E)/d * I,
+    which keeps E positive definite (hence invertible/full-rank) even when its
+    empirical spectrum sits at or below the usual whitening threshold. Shared
+    by every ``use_fisher`` consumer (delta computation and neuron-extension
+    computation) so both are protected consistently.
+
+    Parameters
+    ----------
+    matrix_e: torch.Tensor
+        gradient covariance matrix E, of shape (d, d)
+    fisher_shrinkage: float
+        shrinkage intensity alpha in [0, 1]
+
+    Returns
+    -------
+    torch.Tensor
+        the shrunk matrix E
+    """
+    assert 0.0 <= fisher_shrinkage <= 1.0, (
+        f"fisher_shrinkage must be in [0, 1], got {fisher_shrinkage}"
+    )
+    d = matrix_e.shape[0]
+    return (1 - fisher_shrinkage) * matrix_e + fisher_shrinkage * (
+        matrix_e.trace() / d
+    ) * torch.eye(d, device=matrix_e.device, dtype=matrix_e.dtype)
+
+
 class MergeGrowingModule(torch.nn.Module):
     """
     Module to connect multiple modules with an merge operation.
@@ -389,7 +421,14 @@ class MergeGrowingModule(torch.nn.Module):
         """No-op: merge modules have no gradient-covariance statistic."""
 
     def clear_pre_activity_grad(self) -> None:
-        """No-op: merge modules do not retain a pre-activity gradient."""
+        """Clear the retained gradient of the stored input (this module's pre-activity).
+
+        ``forward`` calls ``self.input.retain_grad()`` whenever ``store_input``
+        is set, so — unlike a plain ``GrowingModule`` — the merge node's own
+        input tensor is where the gradient accumulates across backward passes.
+        """
+        if self.input is not None and self.input.grad is not None:
+            self.input.grad = None
 
     def reset_computation(self) -> None:
         """
@@ -2207,6 +2246,7 @@ class GrowingModule(torch.nn.Module):
         dtype: torch.dtype = torch.float32,
         force_pseudo_inverse: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | float]:
         r"""
         Compute the optimal delta for the layer using current S and M tensors.
@@ -2235,6 +2275,12 @@ class GrowingModule(torch.nn.Module):
             if True, use the empirical Fisher / gradient covariance as a left
             preconditioner. Relies on the independence hypothesis from the math
             notes (`@hyp:independence`).
+        fisher_shrinkage: float
+            Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
+            covariance E to (1 - alpha) * E + alpha * tr(E)/d * I before using
+            it as a preconditioner, so a near-singular E does not force the
+            pseudo-inverse fallback below. Only has an effect when
+            ``use_fisher`` is True.
 
         Returns
         -------
@@ -2247,6 +2293,10 @@ class GrowingModule(torch.nn.Module):
         tensor_covariance_loss_gradient = (
             self.covariance_loss_gradient() if use_fisher else None
         )
+        if tensor_covariance_loss_gradient is not None and fisher_shrinkage > 0:
+            tensor_covariance_loss_gradient = _shrink_gradient_covariance(
+                tensor_covariance_loss_gradient, fisher_shrinkage
+            )
 
         self.delta_raw, parameter_update_decrease = optimal_delta(
             tensor_s,
@@ -2353,13 +2403,7 @@ class GrowingModule(torch.nn.Module):
 
         e_numerical_threshold: float | None = None
         if matrix_e is not None and fisher_shrinkage > 0:
-            assert fisher_shrinkage <= 1.0, (
-                f"fisher_shrinkage must be in [0, 1], got {fisher_shrinkage}"
-            )
-            d = matrix_e.shape[0]
-            matrix_e = (1 - fisher_shrinkage) * matrix_e + fisher_shrinkage * (
-                matrix_e.trace() / d
-            ) * torch.eye(d, device=matrix_e.device, dtype=matrix_e.dtype)
+            matrix_e = _shrink_gradient_covariance(matrix_e, fisher_shrinkage)
             e_numerical_threshold = 0.0
 
         # Call tools function with primitive options
@@ -2434,6 +2478,11 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
+        fisher_shrinkage: float
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Only has an effect when ``use_fisher`` is True.
 
         Returns
         -------
@@ -2586,7 +2635,12 @@ class GrowingModule(torch.nn.Module):
         # - compute_delta=False/use_projection=False: no natural-gradient step,
         #   so set the corresponding first-order term to zero.
         if compute_delta:
-            self.compute_optimal_delta(update=True, dtype=dtype, use_fisher=use_fisher)
+            self.compute_optimal_delta(
+                update=True,
+                dtype=dtype,
+                use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
+            )
         else:
             self.optimal_delta_layer = None
             self.parameter_update_decrease = torch.tensor(
@@ -2596,7 +2650,10 @@ class GrowingModule(torch.nn.Module):
             )
             if use_projection and self.previous_module is not None:
                 self.compute_optimal_delta(
-                    update=False, dtype=dtype, use_fisher=use_fisher
+                    update=False,
+                    dtype=dtype,
+                    use_fisher=use_fisher,
+                    fisher_shrinkage=fisher_shrinkage,
                 )
             else:
                 self.delta_raw = None
@@ -2661,6 +2718,12 @@ class GrowingModule(torch.nn.Module):
             multi-backward accumulation schemes (e.g. the true Fisher) where
             E is accumulated separately via update_covariance_loss_gradient
             while S and M keep the real-label gradient.
+
+        Raises
+        ------
+        NotImplementedError
+            if the previous module is neither a GrowingModule nor a
+            MergeGrowingModule.
         """
         self.tensor_s.update()
         self.tensor_m.update()
@@ -2705,10 +2768,17 @@ class GrowingModule(torch.nn.Module):
         Clear the retained gradient of the stored pre-activity.
 
         Retained gradients accumulate across backward passes on the same
-        graph; multi-backward schemes must clear them between passes.
+        graph; multi-backward schemes must clear them between passes. When
+        ``next_module`` is a ``MergeGrowingModule``, this module's own
+        ``_pre_activity`` is never populated (storage is delegated to the
+        merge node's input, see the ``pre_activity`` property); in that case
+        delegate the clearing to ``next_module``.
         """
-        if self._pre_activity is not None and self._pre_activity.grad is not None:
-            self._pre_activity.grad = None
+        if self._internal_store_pre_activity:
+            if self._pre_activity is not None and self._pre_activity.grad is not None:
+                self._pre_activity.grad = None
+        elif self.next_module is not None:
+            self.next_module.clear_pre_activity_grad()
 
     def reset_computation(self) -> None:
         """

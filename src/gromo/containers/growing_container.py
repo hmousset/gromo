@@ -183,15 +183,19 @@ class GrowingContainer(torch.nn.Module):
                 eigenvalues[:, j].clamp_min(0).sqrt().unsqueeze(-1)
                 * eigenvectors[:, :, j]
             ) / norm
-            self.clear_pre_activity_grads()
+            self.clear_pre_activity_grad()
             torch.autograd.backward(logits, seed, retain_graph=j < n_classes - 1)
             self.update_covariance_loss_gradient(count_samples=(j == 1))
 
-    def clear_pre_activity_grads(self) -> None:
+    def clear_pre_activity_grad(self) -> None:
         """Clear retained pre-activity gradients of the growing layers.
 
         Required between the backward passes of multi-backward accumulation
-        schemes: retained gradients accumulate across passes.
+        schemes: retained gradients accumulate across passes. Named to match
+        ``GrowingModule``/``MergeGrowingModule``'s singular method (like
+        ``update_covariance_loss_gradient``) so that a container nested as a
+        layer inside another container's ``_growing_layers`` (e.g. a
+        ``GrowingDAG`` inside a ``GrowingGraphNetwork``) dispatches correctly.
         """
         for layer in self._growing_layers:
             layer.clear_pre_activity_grad()

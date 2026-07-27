@@ -1808,6 +1808,61 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         out.pow(2).sum().backward()
         self.assertAllClose(layer.pre_activity.grad, first_grad)
 
+    def test_clear_pre_activity_grad_delegates_to_merge_module(self):
+        """When a layer's next_module is a MergeGrowingModule, its own
+        _pre_activity is never populated (storage is delegated to
+        next_module.input, see the pre_activity property): clear_pre_activity_grad
+        must clear the merge node's retained gradient instead of no-oping, and
+        MergeGrowingModule.clear_pre_activity_grad must not be a no-op either.
+        This is the topology used by GrowingDAG / skip-connection merges, and
+        matters for accumulate_true_fisher_covariance's multi-backward-pass
+        clearing protocol."""
+        in_features, merge_features, out_features, batch = 3, 4, 5, 6
+        merge = LinearMergeGrowingModule(
+            in_features=merge_features, name="merge", device=global_device()
+        )
+        layer = LinearGrowingModule(
+            in_features,
+            merge_features,
+            device=global_device(),
+            next_module=merge,
+            name="layer",
+        )
+        next_layer = LinearGrowingModule(
+            merge_features,
+            out_features,
+            device=global_device(),
+            previous_module=merge,
+            name="next_layer",
+        )
+        merge.set_previous_modules([layer])
+        merge.set_next_modules([next_layer])
+
+        layer.init_computation()
+        next_layer.init_computation()
+
+        x = torch.randn(batch, in_features, device=global_device())
+        out = next_layer(merge(layer(x)))
+        out.pow(2).sum().backward(retain_graph=True)
+        self.assertIsNotNone(merge.input.grad)
+        first_grad = merge.input.grad.clone()
+
+        # without clearing, a second backward accumulates on the merge node's input
+        out.pow(2).sum().backward(retain_graph=True)
+        self.assertAllClose(merge.input.grad, 2 * first_grad)
+
+        # layer.clear_pre_activity_grad() must delegate to the merge node
+        layer.clear_pre_activity_grad()
+        self.assertIsNone(merge.input.grad)
+        out.pow(2).sum().backward(retain_graph=True)
+        self.assertAllClose(merge.input.grad, first_grad)
+
+        # merge.clear_pre_activity_grad() must also clear it directly
+        merge.clear_pre_activity_grad()
+        self.assertIsNone(merge.input.grad)
+        out.pow(2).sum().backward()
+        self.assertAllClose(merge.input.grad, first_grad)
+
     def _true_fisher_container(self, n_classes: int, batch: int):
         """Container wrapping one classifier-head layer, with S/M accumulated
         from a real-label backward and the graph retained for the Fisher."""
