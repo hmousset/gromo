@@ -1626,6 +1626,25 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         self.assertShapeEqual(w, (out_features, in_features))
         self.assertGreaterEqual(float(fo), 0.0)
 
+    def test_compute_optimal_delta_use_fisher_shrinkage(self):
+        """compute_optimal_delta(use_fisher=True, fisher_shrinkage>0) shrinks
+        E before whitening, and differs from the unshrunk delta."""
+        in_features, out_features, batch = 3, 4, 6
+        layer = LinearGrowingModule(in_features, out_features, device=global_device())
+        layer.init_computation()
+
+        x = torch.randn(batch, in_features, device=global_device())
+        layer(x).pow(2).sum().backward()
+        layer.update_computation()
+
+        w_shrunk, _, fo_shrunk = layer.compute_optimal_delta(
+            use_fisher=True, fisher_shrinkage=0.5, update=False
+        )
+        w_plain, _, _ = layer.compute_optimal_delta(use_fisher=True, update=False)
+        self.assertShapeEqual(w_shrunk, (out_features, in_features))
+        self.assertGreaterEqual(float(fo_shrunk), 0.0)
+        self.assertFalse(torch.allclose(w_shrunk, w_plain))
+
     def test_compute_optimal_added_parameters_use_fisher(self):
         """Smoke test: rank-k extension runs with use_fisher=True."""
         in_features, hidden, out_features, batch = 4, 3, 5, 8
