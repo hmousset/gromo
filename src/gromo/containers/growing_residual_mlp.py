@@ -182,9 +182,9 @@ class GrowingResidualMLP(SequentialGrowingModel):
         hidden features
     num_blocks : int
         number of blocks
-    activation : torch.nn.Module, optional
+    activation : torch.nn.Module
         activation function, by default torch.nn.ReLU()
-    device : torch.device, optional
+    device : torch.device
         default device, by default None
     """
 
@@ -279,7 +279,7 @@ class GrowingResidualMLP(SequentialGrowingModel):
         ----------
         layer_index : int
             selected layer index
-        verbose : bool, optional
+        verbose : bool
             print info, by default False
 
         Returns

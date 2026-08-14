@@ -419,11 +419,11 @@ class MergeGrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        update: bool, optional
+        update: bool
             if True update the optimal delta layer attribute, by default True
-        return_deltas: bool, optional
+        return_deltas: bool
             if True return the deltas, by default False
-        force_pseudo_inverse: bool, optional
+        force_pseudo_inverse: bool
             if True, use the pseudo-inverse to compute the optimal delta even if the, by default False
             matrix is invertible
         dtype: torch.dtype
@@ -577,7 +577,7 @@ class MergeGrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        recurse: bool, optional
+        recurse: bool
             use recursion, by default True
 
         Returns
@@ -592,7 +592,7 @@ class MergeGrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        with_bias: bool, optional
+        with_bias: bool
             add bias to the sum, by default False
 
         Returns
@@ -729,9 +729,9 @@ class GrowingModule(torch.nn.Module):
         shape of the tensor S
     tensor_m_shape: tuple[int, int] | None
         shape of the tensor M
-    post_layer_function: torch.nn.Module, optional
+    post_layer_function: torch.nn.Module
         function to apply after the layer, by default torch.nn.Identity()
-    extended_post_layer_function: torch.nn.Module | None, optional
+    extended_post_layer_function: torch.nn.Module | None
         extended function to apply after the layer, by default None
     allow_growing: bool
         if True, the module can grow (require a previous GrowingModule)
@@ -743,9 +743,9 @@ class GrowingModule(torch.nn.Module):
         device to use
     name: str | None
         name of the module
-    target_in_neurons: int | None, optional
+    target_in_neurons: int | None
         target fan-in size, by default None
-    initial_in_neurons: int | None, optional
+    initial_in_neurons: int | None
         initial fan-in size, by default None
     """
 
@@ -1356,11 +1356,11 @@ class GrowingModule(torch.nn.Module):
             input tensor
         x_ext: torch.Tensor | None
             extension tensor
-        use_optimal_delta: bool, optional
+        use_optimal_delta: bool
             if True, use the optimal delta layer, default True
-        use_extended_input: bool, optional
+        use_extended_input: bool
             if True, use the extended input layer, default True
-        use_extended_output: bool, optional
+        use_extended_output: bool
             if True, use the extended output layer, default True
 
         Returns
@@ -2011,10 +2011,10 @@ class GrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        scaling_factor: float | torch.Tensor | None, optional
+        scaling_factor: float | torch.Tensor | None
             override for the output extension scale; defaults to
             `self.output_extension_scaling`.
-        extension_size: int, optional
+        extension_size: int
             size of extension, by default 0
         """
         if scaling_factor is None:
@@ -2664,13 +2664,13 @@ class GrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        include_previous: bool, optional
+        include_previous: bool
             delete the extended_output_layer of the previous layer, by default True
-        delete_delta: bool, optional
+        delete_delta: bool
             delete the optimal_delta_layer of the module, by default True
-        delete_input: bool, optional
+        delete_input: bool
             delete the extended_input_layer of this module, by default True
-        delete_output: bool, optional
+        delete_output: bool
             delete the extended_output_layer of this layer, by default False
             warning: this does not delete the extended_input_layer of the next layer
 

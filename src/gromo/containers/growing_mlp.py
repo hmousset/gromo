@@ -27,7 +27,7 @@ class GrowingMLP(SequentialGrowingModel):
         Whether to use bias in layers.
     flatten : bool
         Whether to flatten the input before passing it through the network.
-    device : torch.device | None, optional
+    device : torch.device | None
         Device to use for computation, by default None.
 
     Raises
@@ -132,7 +132,7 @@ class GrowingMLP(SequentialGrowingModel):
         ----------
         x : Tensor
             Input tensor.
-        mask : dict | None, optional
+        mask : dict | None
             Not used in this implementation.
 
         Returns
@@ -169,7 +169,7 @@ class GrowingMLP(SequentialGrowingModel):
 
         Parameters
         ----------
-        verbose : bool, optional
+        verbose : bool
             print info, by default False
         """
         max_values = torch.zeros(len(self.layers), device=self.device)
@@ -227,13 +227,13 @@ class Perceptron(GrowingMLP):
         hidden features
     out_features : int
         output features
-    activation : nn.Module, optional
+    activation : nn.Module
         activation function, by default nn.Sigmoid()
-    use_bias : bool, optional
+    use_bias : bool
         use bias, by default True
-    flatten : bool, optional
+    flatten : bool
         flatten the input, by default True
-    device : torch.device | None, optional
+    device : torch.device | None
         default device, by default None
     """
 
