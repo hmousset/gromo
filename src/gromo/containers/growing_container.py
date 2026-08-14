@@ -16,9 +16,9 @@ class GrowingContainer(torch.nn.Module):
         input features, to be interpreted based on current needs
     out_features : int
         output features, to be interpreted based on current needs
-    device : torch.device | str | None, optional
+    device : torch.device | str | None
         default device, by default None
-    name : str, optional
+    name : str
         name of the model, by default "GrowingContainer"
     """
 
@@ -104,10 +104,10 @@ class GrowingContainer(torch.nn.Module):
 
         Parameters
         ----------
-        update : bool, optional
+        update : bool
             update the optimal delta layer attribute and the first order decrease,
             by default True
-        force_pseudo_inverse : bool, optional
+        force_pseudo_inverse : bool
             use the pseudo-inverse to compute the optimal delta even if the
             matrix is invertible, by default False
         """
@@ -162,7 +162,7 @@ class GrowingContainer(torch.nn.Module):
         ----------
         layer_index : int
             selected layer index
-        verbose : bool, optional
+        verbose : bool
             print info, by default False
 
         Returns
@@ -242,9 +242,9 @@ class GrowingModel(GrowingContainer):
         input features, to be interpreted based on current needs
     out_features : int
         output features, to be interpreted based on current needs
-    device : torch.device | str | None, optional
+    device : torch.device | str | None
         default device, by default None
-    name : str, optional
+    name : str
         name of the model, by default "GrowingContainer"
     """
 

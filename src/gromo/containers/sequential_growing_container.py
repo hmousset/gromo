@@ -15,7 +15,7 @@ class SequentialGrowingModel(GrowingModel):
         input features, to be interpreted based on current needs
     out_features : int
         output features, to be interpreted based on current needs
-    device : torch.device | str | None, optional
+    device : torch.device | str | None
         default device, by default None
     """
 
@@ -50,7 +50,7 @@ class SequentialGrowingModel(GrowingModel):
             growing_layers list.
             "all": all layers in the _growable_layers list are added to the
             _growing_layers list.
-        index : int | None, optional
+        index : int | None
             If scheduling_method is "sequential", this index specifies which layer to
             grow next.
 

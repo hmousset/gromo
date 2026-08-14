@@ -32,21 +32,21 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
         the expected shape of the input excluding batch size and channels
     next_kernel_size : int | tuple[int, int]
         kernel size fo the next modules
-    post_merge_function : torch.nn.Module, optional
+    post_merge_function : torch.nn.Module
         activation function after the merge, by default torch.nn.Identity()
-    reshape_function : torch.nn.Module, optional
+    reshape_function : torch.nn.Module
         function that potentially reshapes the output of the module, by default torch.nn.Identity()
-    previous_modules : list[GrowingModule  |  MergeGrowingModule] | None, optional
+    previous_modules : list[GrowingModule  |  MergeGrowingModule] | None
         list of preceding modules, by default None
-    next_modules : list[GrowingModule  |  MergeGrowingModule] | None, optional
+    next_modules : list[GrowingModule  |  MergeGrowingModule] | None
         list of succeeding modules, by default None
-    allow_growing : bool, optional
+    allow_growing : bool
         allow growth of the module, by default False
-    input_volume : int | None, optional
+    input_volume : int | None
         expected input volume, by default None
-    device : torch.device | None, optional
+    device : torch.device | None
         default device, by default None
-    name : str | None, optional
+    name : str | None
         name of the module, by default None
     """
 
@@ -640,19 +640,19 @@ class Conv2dGrowingModule(GrowingModule):
     in_channels : int
     out_channels : int
     kernel_size : int | tuple[int, int]
-    stride : int | tuple[int, int], optional
+    stride : int | tuple[int, int]
         by default 1
-    padding : int | tuple[int, int], optional
+    padding : int | tuple[int, int]
         by default 0
-    dilation : int | tuple[int, int], optional
+    dilation : int | tuple[int, int]
         by default 1
-    input_size : tuple[int, int] | None, optional
+    input_size : tuple[int, int] | None
         the expected shape of the input excluding batch size and channels, by default None
-    use_bias : bool, optional
+    use_bias : bool
         use bias, by default True
     post_layer_function : torch.nn.Module
         function applied after the layer (e.g. activation function)
-    extended_post_layer_function :  torch.nn.Module | None, optional
+    extended_post_layer_function :  torch.nn.Module | None
         extended function applied after the layer (e.g. activation function)
     previous_module : GrowingModule | MergeGrowingModule | None
         previous module in the network (None if the first module),
@@ -1857,31 +1857,31 @@ class FullConv2dGrowingModule(Conv2dGrowingModule):
     in_channels : int
     out_channels : int
     kernel_size : int | tuple[int, int]
-    stride : int | tuple[int, int], optional
+    stride : int | tuple[int, int]
         by default 1
-    padding : int | tuple[int, int], optional
+    padding : int | tuple[int, int]
         by default 0
-    dilation : int | tuple[int, int], optional
+    dilation : int | tuple[int, int]
         by default 1
-    input_size : tuple[int, int] | None, optional
+    input_size : tuple[int, int] | None
         the expected shape of the input excluding batch size and channels, by default None
-    use_bias : bool, optional
+    use_bias : bool
         use bias, by default True
-    post_layer_function : torch.nn.Module, optional
+    post_layer_function : torch.nn.Module
         activation function, by default torch.nn.Identity()
-    extended_post_layer_function : torch.nn.Module | None, optional
+    extended_post_layer_function : torch.nn.Module | None
         extended activation function, by default None
-    previous_module : GrowingModule | MergeGrowingModule | None, optional
+    previous_module : GrowingModule | MergeGrowingModule | None
         the preceding growing module, by default None
-    next_module : GrowingModule | MergeGrowingModule | None, optional
+    next_module : GrowingModule | MergeGrowingModule | None
         the succeeding growing module, by default None
-    allow_growing : bool, optional
+    allow_growing : bool
         allow growth of this module, by default False
-    device : torch.device | None, optional
+    device : torch.device | None
         default device, by default None
-    name : str | None, optional
+    name : str | None
         name of the module, by default None
-    target_in_channels : int | None, optional
+    target_in_channels : int | None
         target in channels, by default None
     """
 
