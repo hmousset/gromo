@@ -48,23 +48,23 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         use bias
     use_layer_norm : bool
         use Layer Normalization
-    default_layer_type : str, optional
+    default_layer_type : str
         the type of layer operations, to choose between "linear" and "convolution", by default "linear"
-    activation : str, optional
+    activation : str
         the default activation function, by default "selu"
-    kernel_size : tuple[int, int], optional
+    kernel_size : tuple[int, int]
         the default kernel size for convolution, by default (3, 3)
-    name : str, optional
+    name : str
         name of the dag, by default ""
-    root : str, optional
+    root : str
         name of the root node, by default "start"
-    end : str, optional
+    end : str
         name of the end node, by default "end"
-    input_shape : tuple[int, int] | None, optional
+    input_shape : tuple[int, int] | None
         the expected shape of the input excluding batch size and channels, by default None
-    DAG_parameters : dict | None, optional
+    DAG_parameters : dict | None
         configuration dictionary to create a custom initial dag, by default None
-    device : torch.device | str | None, optional
+    device : torch.device | str | None
         default device, by default None
 
     Raises
@@ -179,11 +179,11 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         Parameters
         ----------
-        update : bool, optional
+        update : bool
             update the optimal delta layer attribute and the first order decrease, by default True
-        return_deltas: bool, optional
+        return_deltas: bool
             placeholder argument as this function does not return anything
-        force_pseudo_inverse : bool, optional
+        force_pseudo_inverse : bool
             use the pseudo-inverse to compute the optimal delta even if the
             matrix is invertible, by default False
         """
@@ -588,9 +588,9 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             incoming node of edge
         next_node : str
             outgoing node of edge
-        edge_attributes : dict, optional
+        edge_attributes : dict
             extra attributes of edge, by default {}
-        zero_weights : bool, optional
+        zero_weights : bool
             set the weights to zero, by default False
         """
         self.add_edge(prev_node, next_node)
@@ -622,9 +622,9 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             outgoing node for new edge
         node_attributes : dict
             attributes of new node
-        edge_attributes : dict, optional
+        edge_attributes : dict
             extra attributes of edge, by default {}
-        zero_weights : bool, optional
+        zero_weights : bool
             set the weights to zero, by default False
 
         Raises
@@ -763,9 +763,9 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         ----------
         edges : list[tuple[str, str]]
             list of edges to update modules
-        edge_attributes : dict, optional
+        edge_attributes : dict
             extra attributes for edges, by default {}
-        zero_weights : bool, optional
+        zero_weights : bool
             set the weights to zero, by default False
 
         Raises
@@ -1009,7 +1009,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             list with growth actions information
         dataloader : torch.utils.data.DataLoader
             train features and labels
-        loss_fn : Callable, optional
+        loss_fn : Callable
             loss function for bottleneck calculation, by default torch.nn.CrossEntropyLoss
 
         Returns
@@ -1129,7 +1129,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         ----------
         root : str
             root node of graph
-        pre_root : int, optional
+        pre_root : int
             toy node before root, by default 0
         """
         if pre_root == 0:
@@ -1204,7 +1204,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         ----------
         successors : Mapping[str, list[str]] | Mapping[str, set[str]]
             dictionary with all successors fo nodes
-        size : int, optional
+        size : int
             size of new node to add, by default 0
 
         Returns
@@ -1277,7 +1277,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         Parameters
         ----------
-        expand_end : bool, optional
+        expand_end : bool
             expand the output dimension of the last node, by default False
 
         Returns
@@ -1392,7 +1392,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         ----------
         x : torch.Tensor
             input tensor
-        verbose : bool, optional
+        verbose : bool
             print info, by default False
 
         Returns
@@ -1444,12 +1444,12 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         ----------
         x : torch.Tensor
             input tensor
-        x_ext: torch.Tensor, optional
+        x_ext: torch.Tensor
             extension tensor, by default None
-        mask : dict, optional
+        mask : dict
             extension mask for specific nodes and edges, by default {}
             example: mask["edges"] for edges and mask["nodes"] for nodes
-        verbose : bool, optional
+        verbose : bool
             print info, by default False
 
         Returns
@@ -1591,7 +1591,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             true labels tensor
         loss_fn : Callable
             loss function for bottleneck calculation
-        with_f1score : bool, optional
+        with_f1score : bool
             calculate f1-score, by default False
 
         Returns
@@ -1638,7 +1638,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             true labels tensor
         loss_fn : Callable
             loss function for bottleneck calculation
-        with_f1score : bool, optional
+        with_f1score : bool
             calculate f1-score, by default False
 
         Returns
@@ -1717,17 +1717,17 @@ class Expansion:
         enclosed GrowingDAG object that is deep-copied
     exp_type : ExpansionType
         type of expansion, can be one of [ExpansionType.NEW_EDGE, ExpansionType.NEW_NODE, ExpansionType.EXPANDED_NODE]
-    growth_history : dict, optional
+    growth_history : dict
         expansion history of the enclosed GrowingDAG, by default {}
-    expanding_node : str | None, optional
+    expanding_node : str | None
         node to be expanded, only relevant in expansion types ExpansionType.NEW_NODE and ExpansionType.EXPANDED_NODE, by default None
-    previous_node : str | None, optional
+    previous_node : str | None
         previous node for expansion, only relevant in expansion types ExpansionType.NEW_EDGE and ExpansionType.NEW_NODE, by default None
-    next_node : str | None, optional
+    next_node : str | None
         next node for expansion, only relevant in expansion types ExpansionType.NEW_EDGE and ExpansionType.NEW_NODE, by default None
-    edge_attributes : dict, optional
+    edge_attributes : dict
         attributes of new edges, by default {}
-    node_attributes : dict, optional
+    node_attributes : dict
         attributes of new nodes, by default {}
 
     Raises
@@ -1972,11 +1972,11 @@ class Expansion:
         ----------
         current_step : int
             current growth step
-        neurons_added : list, optional
+        neurons_added : list
             list of edges that were added or increased in dimension, by default []
-        neurons_updated : list, optional
+        neurons_updated : list
             list of edges whose weights were updated, by default []
-        nodes_added : list, optional
+        nodes_added : list
             list of nodes that were added, by default []
         """
         if current_step not in self.growth_history:
@@ -2104,19 +2104,19 @@ class InterMergeExpansion(Expansion):
         enclosed GrowingDAG object that is deep-copied
     exp_type : ExpansionType
         type of expansion, can be one of [ExpansionType.NEW_EDGE, ExpansionType.NEW_NODE, ExpansionType.EXPANDED_NODE]
-    growth_history : dict, optional
+    growth_history : dict
         expansion history of the enclosed GrowingDAG, by default {}
-    expanding_node : str | None, optional
+    expanding_node : str | None
         node to be expanded, only relevant in expansion types ExpansionType.NEW_NODE and ExpansionType.EXPANDED_NODE, by default None
-    previous_node : str | None, optional
+    previous_node : str | None
         previous node for expansion, only relevant in expansion types ExpansionType.NEW_EDGE and ExpansionType.NEW_NODE, by default None
-    next_node : str | None, optional
+    next_node : str | None
         next node for expansion, only relevant in expansion types ExpansionType.NEW_EDGE and ExpansionType.NEW_NODE, by default None
-    adjacent_expanding_node: str | None, optional
+    adjacent_expanding_node: str | None
         adjacent node to the expanded node belonging in different GrowingDAG, only relevant in expansion type ExpansionType.EXPANDED_NODE, by default None
-    edge_attributes : dict, optional
+    edge_attributes : dict
         attributes of new edges, by default {}
-    node_attributes : dict, optional
+    node_attributes : dict
         attributes of new nodes, by default {}
     """
 

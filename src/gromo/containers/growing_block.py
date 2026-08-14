@@ -249,7 +249,7 @@ class GrowingBlock(GrowingContainer):
         ----------
         x: torch.Tensor
             input tensor
-        mask: dict | None, optional
+        mask: dict | None
             mask tensor (not used), by default None
 
         Returns
@@ -757,7 +757,7 @@ class LinearGrowingBlock(GrowingBlock):
         number of output channels
     hidden_features: int
         number of hidden features, if zero the block is the zero function
-    target_hidden_features: int | None, optional
+    target_hidden_features: int | None
         target hidden features, by default None
     activation: torch.nn.Module | None
         activation function to use, if None use the identity function
@@ -867,7 +867,7 @@ class Conv2dGrowingBlock(GrowingBlock):
         size of the convolutional kernel
     hidden_channels: int
         number of hidden channels, if zero the block is the zero function
-    target_hidden_channels: int | None, optional
+    target_hidden_channels: int | None
         target hidden channels, by default None
     activation: torch.nn.Module | None
         activation function to use, if None use the identity function

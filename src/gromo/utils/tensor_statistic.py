@@ -39,9 +39,9 @@ class TensorStatistic:
         shape of the tensor to compute, if None use the shape of the first update
     update_function: Callable[[Any], tuple[torch.Tensor, int]] | Callable[[], tuple[torch.Tensor, int]]
         function to update the tensor
-    device : torch.device | str | None, optional
+    device : torch.device | str | None
         default device, by default None
-    name: str | None, optional
+    name: str | None
         used for debugging, by default None
     """
 
@@ -170,9 +170,9 @@ class TensorStatiticWithEstimationError(TensorStatistic):
         shape of the tensor to compute, if None use the shape of the first update
     update_function: Callable[[Any], tuple[torch.Tensor, int]] | Callable[[], tuple[torch.Tensor, int]]
         function to update the tensor and compute the batch covariance
-    device : torch.device | str | None, optional
+    device : torch.device | str | None
         default device, by default None
-    name: str | None, optional
+    name: str | None
         used for debugging, by default None
     trace_precision: float
         relative precision for the trace computation, default 1e-3
