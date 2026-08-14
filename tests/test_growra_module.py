@@ -22,7 +22,7 @@ from gromo.growra.container import (
     get_growra_model,
     get_growra_modules,
 )
-from gromo.growra.module import GrowRAConv2d, GrowRALinear
+from gromo.growra.module import GrowRAConv2d, GrowRALinear, Scaling
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.utils.utils import global_device
@@ -51,6 +51,30 @@ def _randn(*args, **kwargs):
 
 def _ones(*args, **kwargs):
     return torch.ones(*args, device=global_device(), **kwargs)
+
+
+class TestScaling(TestCase):
+    """Direct tests for the Scaling helper module."""
+
+    def test_extended_forward_both_none(self):
+        scaling = Scaling(lambda rank: 2.0, lambda: 1)
+        x, x_ext = scaling.extended_forward(None, None)
+        self.assertIsNone(x)
+        self.assertIsNone(x_ext)
+
+    def test_extended_forward_x_only(self):
+        scaling = Scaling(lambda rank: 2.0, lambda: 1)
+        x, x_ext = scaling.extended_forward(_ones(3), None)
+        assert x is not None
+        self.assertTrue(torch.allclose(x, _ones(3) * 2.0))
+        self.assertIsNone(x_ext)
+
+    def test_extended_forward_both_provided(self):
+        scaling = Scaling(lambda rank: 2.0, lambda: 1)
+        x, x_ext = scaling.extended_forward(_ones(3), _ones(4))
+        assert x is not None and x_ext is not None
+        self.assertTrue(torch.allclose(x, _ones(3) * 2.0))
+        self.assertTrue(torch.allclose(x_ext, _ones(4) * 2.0))
 
 
 class TestGrowingGrowraLinearInit(TestCase):
@@ -496,6 +520,37 @@ class TestFOGROGrowthPipeline(TestCase):
         self.assertEqual(lora.rank, rank_before)
         lora.reset_computation()
 
+    def test_post_extension_init_noop_without_growth(self):
+        """_post_extension_init is a no-op when rank did not increase."""
+        lora = self._make_lora(rank=2)
+        weight_before = lora.first_layer.weight.clone()
+        lora._post_extension_init(old_rank=lora.rank)
+        self.assertTrue(torch.equal(lora.first_layer.weight, weight_before))
+
+    def test_apply_change_lr_init_override(self):
+        """apply_change(lr_init=...) overrides self.lr_init and is consumed
+        (not forwarded to the base GrowingBlock.apply_change)."""
+        lora = self._make_lora(rank=0)
+        lora.init_computation()
+        x = _randn(self.batch_size, self.in_features)
+        lora.zero_grad()
+        (lora(x) ** 2).sum().backward()
+        lora.update_computation()
+        lora.compute_optimal_updates(
+            maximum_added_neurons=2,
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=True,
+            use_fisher=True,
+        )
+        lora.sub_select_optimal_added_parameters(keep_neurons=2)
+        lora.apply_change(scaling_factor=1.0, extension_size=2, lr_init=0.5)
+        self.assertEqual(lora.lr_init, 0.5)
+        lora.reset_computation()
+
 
 class TestEnableDora(TestCase):
     """Tests for enable_dora() called post-construction."""
@@ -570,6 +625,20 @@ class TestEnableDora(TestCase):
         assert lora.magnitude is not None
         self.assertEqual(lora.magnitude.shape[0], 8)
         self.assertTrue(lora.magnitude.requires_grad)
+
+    def test_enable_dora_linear_idempotent(self):
+        """A second enable_dora() call is a no-op: same magnitude tensor."""
+        lora = GrowRALinear(_linear(10, 20), rank=2, use_dora=True)
+        magnitude_before = lora.magnitude
+        lora.enable_dora()
+        self.assertIs(lora.magnitude, magnitude_before)
+
+    def test_enable_dora_conv_idempotent(self):
+        """A second enable_dora() call is a no-op: same magnitude tensor."""
+        lora = GrowRAConv2d(_conv2d(3, 8, 3, padding=1), rank=2, use_dora=True)
+        magnitude_before = lora.magnitude
+        lora.enable_dora()
+        self.assertIs(lora.magnitude, magnitude_before)
 
 
 class TestGrowingGrowraLinearWithLinearGrowingModule(TestCase):
@@ -877,6 +946,38 @@ class TestGrowingGrowraConv2dFOGRO(TestCase):
         self.assertEqual(lora.rank, rank_before)
         lora.reset_computation()
 
+    def test_post_extension_init_noop_without_growth(self):
+        """_post_extension_init is a no-op when rank did not increase."""
+        conv = _conv2d(3, 8, kernel_size=3, padding=1)
+        lora = GrowRAConv2d(conv, rank=2)
+        weight_before = lora.first_layer.weight.clone()
+        lora._post_extension_init(old_rank=lora.rank)
+        self.assertTrue(torch.equal(lora.first_layer.weight, weight_before))
+
+    def test_apply_change_lr_init_override(self):
+        """apply_change(lr_init=...) overrides self.lr_init and is consumed
+        (not forwarded to the base GrowingBlock.apply_change)."""
+        conv = _conv2d(3, 8, kernel_size=3, padding=1)
+        lora = GrowRAConv2d(conv, rank=0)
+        lora.init_computation()
+        x = _randn(4, 3, 8, 8)
+        lora(x).sum().backward()
+        lora.update_computation()
+        lora.compute_optimal_updates(
+            maximum_added_neurons=2,
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=True,
+            use_fisher=True,
+        )
+        lora.sub_select_optimal_added_parameters(keep_neurons=2)
+        lora.apply_change(scaling_factor=1.0, extension_size=2, lr_init=0.5)
+        self.assertEqual(lora.lr_init, 0.5)
+        lora.reset_computation()
+
 
 # ===================== Dropout Tests =====================
 
@@ -1057,6 +1158,22 @@ class TestDoRALinear(TestCase):
         self.assertEqual(
             lora.first_layer.weight.device, torch.device(linear.weight.device)
         )
+
+    def test_forward_dora_with_dropout_train_mode(self):
+        """DoRA forward's dropout branch: stochastic in train mode, matches
+        base-layer output at rank=0 in expectation-free eval mode."""
+        lora = GrowRALinear(_linear(10, 20), rank=4, use_dora=True, dropout=0.9)
+        nn.init.normal_(lora.first_layer.weight)
+        nn.init.normal_(lora.second_layer.weight)
+        lora.train()
+        x = _ones(16, 10)
+        out1 = lora(x)
+        out2 = lora(x)
+        self.assertEqual(out1.shape, (16, 20))
+        self.assertFalse(torch.allclose(out1, out2))
+
+        lora.eval()
+        self.assertTrue(torch.allclose(lora(x), lora(x)))
 
     def test_extended_forward_dora_rank_zero(self):
         lora = GrowRALinear(_linear(10, 20), rank=0, use_dora=True)
@@ -1248,6 +1365,24 @@ class TestDoRAConv2d(TestCase):
         conv = _conv2d(3, 8, 3, padding=1)
         lora = GrowRAConv2d(conv, rank=0, device=device, activation=nn.ReLU())
         self.assertEqual(lora.first_layer.weight.device, torch.device(conv.weight.device))
+
+    def test_forward_dora_with_dropout_train_mode(self):
+        """DoRA forward's dropout branch: stochastic in train mode, matches
+        base-layer output at rank=0 in expectation-free eval mode."""
+        lora = GrowRAConv2d(
+            _conv2d(3, 8, 3, padding=1), rank=4, use_dora=True, dropout=0.9
+        )
+        nn.init.normal_(lora.first_layer.weight)
+        nn.init.normal_(lora.second_layer.weight)
+        lora.train()
+        x = _ones(4, 3, 8, 8)
+        out1 = lora(x)
+        out2 = lora(x)
+        self.assertEqual(out1.shape, (4, 8, 8, 8))
+        self.assertFalse(torch.allclose(out1, out2))
+
+        lora.eval()
+        self.assertTrue(torch.allclose(lora(x), lora(x)))
 
     def test_extended_forward_dora_rank_zero(self):
         lora = GrowRAConv2d(_conv2d(3, 8, 3, padding=1), rank=0, use_dora=True)
