@@ -190,9 +190,9 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         force_pseudo_inverse : bool
             use the pseudo-inverse to compute the optimal delta even if the
             matrix is invertible, by default False
-        use_fisher : bool, optional
+        use_fisher : bool
             not supported for GrowingDAG, see Raises.
-        fisher_shrinkage : float, optional
+        fisher_shrinkage : float
             not supported for GrowingDAG, see Raises.
 
         Raises
