@@ -14,19 +14,19 @@ class LinearMergeGrowingModule(MergeGrowingModule):
 
     Parameters
     ----------
-    post_merge_function : torch.nn.Module, optional
+    post_merge_function : torch.nn.Module
         activation function after the merge, by default torch.nn.Identity()
-    previous_modules : list[GrowingModule | MergeGrowingModule] | None, optional
+    previous_modules : list[GrowingModule | MergeGrowingModule] | None
         list of preceding modules, by default None
-    next_modules : list[GrowingModule | MergeGrowingModule] | None, optional
+    next_modules : list[GrowingModule | MergeGrowingModule] | None
         list of succeeding modules, by default None
-    allow_growing : bool, optional
+    allow_growing : bool
         allow growth of the module, by default False
-    in_features : int | None, optional
+    in_features : int | None
         input features, by default None
-    device : torch.device | None, optional
+    device : torch.device | None
         default device, by default None
-    name : str | None, optional
+    name : str | None
         name of the module, by default None
     """
 
@@ -299,23 +299,23 @@ class LinearGrowingModule(GrowingModule):
         input features
     out_features : int
         output features
-    use_bias : bool, optional
+    use_bias : bool
         use bias, by default True
-    post_layer_function : torch.nn.Module, optional
+    post_layer_function : torch.nn.Module
         activation function, by default torch.nn.Identity()
-    extended_post_layer_function : torch.nn.Module | None, optional
+    extended_post_layer_function : torch.nn.Module | None
         extended activation function, by default None
-    previous_module : GrowingModule | MergeGrowingModule | None, optional
+    previous_module : GrowingModule | MergeGrowingModule | None
         the preceding growing module, by default None
-    next_module : GrowingModule | MergeGrowingModule | None, optional
+    next_module : GrowingModule | MergeGrowingModule | None
         the succeeding growing module, by default None
-    allow_growing : bool, optional
+    allow_growing : bool
         allow growth of this module, by default False
-    device : torch.device | None, optional
+    device : torch.device | None
         default device, by default None
-    name : str | None, optional
+    name : str | None
         name of the module, by default None
-    target_in_features: int | None, optional
+    target_in_features: int | None
         target fan-in size, by default None
     """
 
@@ -794,10 +794,10 @@ class LinearGrowingModule(GrowingModule):
             extension of the bias vector of the layer
             shape (added_out_features,)
             if None the layer is extended with zeros
-        added_in_features: int, optional
+        added_in_features: int
             number of input features added if None, the number of input
             features is not changed, by default 0
-        added_out_features: int, optional
+        added_out_features: int
             number of output features added if None, the number of output
             features is not changed, by default 0
 
@@ -892,7 +892,7 @@ class LinearGrowingModule(GrowingModule):
         ----------
         weight: torch.Tensor
             weight of the extension with shape (K, in_features)
-        bias: torch.Tensor | None, optional
+        bias: torch.Tensor | None
             bias of the extension if needed with shape (K)
         """
         assert weight.shape[1] == self.in_features, (

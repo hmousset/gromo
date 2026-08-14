@@ -15,7 +15,7 @@ class GrowingDropout(nn.modules.dropout._DropoutNd):
         Probability of an element to be zeroed.
         Set to non-zero to activate.
         Default: 0.0 for no dropout.
-    name : str, optional
+    name : str
         Name of the layer for debugging, by default="growing_droupout"
     """
 

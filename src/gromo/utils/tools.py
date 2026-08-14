@@ -75,12 +75,12 @@ def optimal_delta(
         S tensor from calling layer, of shape [total_in_features, total_in_features]
     tensor_m: torch.Tensor
         M tensor from calling layer, of shape [total_in_features, in_features]
-    dtype: torch.dtype, optional
+    dtype: torch.dtype
         dtype for S and M during the computation, by default torch.float32
-    force_pseudo_inverse: bool, optional
+    force_pseudo_inverse: bool
         if True, use the pseudo-inverse to compute the optimal delta even if the
         matrix is invertible, by default False
-    tensor_covariance_loss_gradient: torch.Tensor | None, optional
+    tensor_covariance_loss_gradient: torch.Tensor | None
         empirical Fisher E_s of shape (out_features, out_features). When provided
         the preconditioned update dW* = E_s^-1 M^T S^-1 is returned. Note that
         relying on this preconditioner silently uses the independence hypothesis
@@ -506,7 +506,7 @@ def apply_border_effect_on_unfolded(
     border_effect_conv: torch.nn.Conv2d
         convolutional layer providing the convolution hyper-parameters
         (stride, padding, dilation, kernel size) used to apply the border effect.
-    identity_weight: torch.Tensor | None, optional
+    identity_weight: torch.Tensor | None
         constant depthwise kernel (see `create_bordering_effect_weight`) applied
         functionally with `torch.nn.functional.conv2d`. If None, it is built from
         `border_effect_conv`.
