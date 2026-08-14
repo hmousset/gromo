@@ -28,7 +28,8 @@ dependencies = [
     "torchmetrics",
 ]
 [project.optional-dependencies]
-test = ["coverage", "peft", "torchvision"]
+test = ["coverage"]
+test-extended = ["peft", "torchvision"]
 dev = ["ruff", "pre-commit", "pydoclint"]
 doc = [
     "pre-commit",

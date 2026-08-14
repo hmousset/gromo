@@ -752,6 +752,8 @@ doc = [
 ]
 test = [
     { name = "coverage" },
+]
+test-extended = [
     { name = "peft" },
     { name = "torchvision" },
 ]
@@ -765,7 +767,7 @@ requires-dist = [
     { name = "networkx" },
     { name = "numpy" },
     { name = "numpydoc", marker = "extra == 'doc'" },
-    { name = "peft", marker = "extra == 'test'" },
+    { name = "peft", marker = "extra == 'test-extended'" },
     { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "pre-commit", marker = "extra == 'doc'" },
     { name = "pydata-sphinx-theme", marker = "extra == 'doc'" },
@@ -783,9 +785,9 @@ requires-dist = [
     { name = "tomli" },
     { name = "torch" },
     { name = "torchmetrics" },
-    { name = "torchvision", marker = "extra == 'test'" },
+    { name = "torchvision", marker = "extra == 'test-extended'" },
 ]
-provides-extras = ["test", "dev", "doc"]
+provides-extras = ["test", "test-extended", "dev", "doc"]
 
 [[package]]
 name = "hf-xet"
