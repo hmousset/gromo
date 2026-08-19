@@ -399,7 +399,6 @@ class TestTools(TorchTestCase):
 
     def test_compute_optimal_added_parameters_e_numerical_threshold(self):
         """E whitening cutoff can differ from S's via e_numerical_threshold."""
-        torch.manual_seed(42)
         matrix_s = torch.eye(3) * 2.0
         matrix_n = torch.randn(3, 2)
         # E's whole spectrum sits below the default numerical_threshold (1e-6)
