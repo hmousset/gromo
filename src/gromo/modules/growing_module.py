@@ -22,36 +22,30 @@ from gromo.utils.utils import (
 GRADIENT_COMPUTATION_EPSILON = 1e-5  # Small perturbation for gradient computation
 
 
-def _shrink_gradient_covariance(
-    matrix_e: torch.Tensor, fisher_shrinkage: float
-) -> torch.Tensor:
-    """Ledoit-Wolf-style ridge shrinkage of a gradient-covariance matrix E.
+def _shrink_psd_matrix(matrix: torch.Tensor, shrinkage: float) -> torch.Tensor:
+    """Ledoit-Wolf-style ridge shrinkage of a positive semi-definite matrix.
 
-    Replaces E by the convex combination (1 - alpha) * E + alpha * tr(E)/d * I,
-    which keeps E positive definite (hence invertible/full-rank) even when its
-    empirical spectrum sits at or below the usual whitening threshold. Shared
-    by every ``use_fisher`` consumer (delta computation and neuron-extension
-    computation) so both are protected consistently.
+    Replaces M by the convex combination (1 - alpha) * M + alpha * tr(M)/d * I,
+    which keeps M positive definite (hence invertible/full-rank) even when its
+    empirical spectrum sits at or below the usual whitening threshold.
 
     Parameters
     ----------
-    matrix_e: torch.Tensor
-        gradient covariance matrix E, of shape (d, d)
-    fisher_shrinkage: float
+    matrix: torch.Tensor
+        positive semi-definite matrix M, of shape (d, d)
+    shrinkage: float
         shrinkage intensity alpha in [0, 1]
 
     Returns
     -------
     torch.Tensor
-        the shrunk matrix E
+        the shrunk matrix M
     """
-    assert 0.0 <= fisher_shrinkage <= 1.0, (
-        f"fisher_shrinkage must be in [0, 1], got {fisher_shrinkage}"
+    assert 0.0 <= shrinkage <= 1.0, f"shrinkage must be in [0, 1], got {shrinkage}"
+    d = matrix.shape[0]
+    return (1 - shrinkage) * matrix + shrinkage * (matrix.trace() / d) * torch.eye(
+        d, device=matrix.device, dtype=matrix.dtype
     )
-    d = matrix_e.shape[0]
-    return (1 - fisher_shrinkage) * matrix_e + fisher_shrinkage * (
-        matrix_e.trace() / d
-    ) * torch.eye(d, device=matrix_e.device, dtype=matrix_e.dtype)
 
 
 class MergeGrowingModule(torch.nn.Module):
@@ -2294,7 +2288,7 @@ class GrowingModule(torch.nn.Module):
             self.covariance_loss_gradient() if use_fisher else None
         )
         if tensor_covariance_loss_gradient is not None and fisher_shrinkage > 0:
-            tensor_covariance_loss_gradient = _shrink_gradient_covariance(
+            tensor_covariance_loss_gradient = _shrink_psd_matrix(
                 tensor_covariance_loss_gradient, fisher_shrinkage
             )
 
@@ -2403,7 +2397,7 @@ class GrowingModule(torch.nn.Module):
 
         e_numerical_threshold: float | None = None
         if matrix_e is not None and fisher_shrinkage > 0:
-            matrix_e = _shrink_gradient_covariance(matrix_e, fisher_shrinkage)
+            matrix_e = _shrink_psd_matrix(matrix_e, fisher_shrinkage)
             e_numerical_threshold = 0.0
 
         # Call tools function with primitive options
